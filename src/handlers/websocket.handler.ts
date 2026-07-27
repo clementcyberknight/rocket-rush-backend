@@ -10,6 +10,10 @@ import {
 import { sessionService } from "../services/session.service";
 import { leaderboardService } from "../services/leaderboard.service";
 
+function generateRandomId(): string {
+  return "user_" + Math.random().toString(36).substring(2, 10) + "_" + Date.now().toString(36);
+}
+
 export function sendBinary(ws: AppWebSocket, msg: ServerMessagePayload): void {
   const bytes = encodeServerMessage(msg);
   ws.send(bytes);
@@ -77,21 +81,26 @@ export function createWebSocketHandler(serverGetter: () => AppServer) {
           }
 
           case ClientMessageType.GAME_TICK: {
-            sessionService.processGameTick(msg.sessionId, msg.score);
             break;
           }
 
           case ClientMessageType.SUBMIT_SCORE: {
             const rawWallet = msg.wallet ? msg.wallet.trim() : "";
-            const wallet = rawWallet.length > 0 ? rawWallet : "anonymous";
+            const isEmail = rawWallet.includes("@");
+            const wallet = rawWallet.length > 0 ? rawWallet : generateRandomId();
             const score = Math.max(0, msg.score || 0);
 
-            console.log(`[ScoreSubmit UNCONDITIONAL] Wallet: ${wallet}, Score: ${score}, Username: "${msg.username || ""}"`);
+            let username = msg.username;
+            if (!username && isEmail) {
+              username = rawWallet.split("@")[0];
+            }
+
+            console.log(`[ScoreSubmit] Wallet: ${wallet}, Score: ${score}, Username: "${username || ""}"`);
 
             const { finalRank, finalScore } = await leaderboardService.submitScore(
               wallet,
               score,
-              msg.username
+              username
             );
 
             console.log(`[ScoreSubmit SUCCESS] Wallet: ${wallet}, Submitted: ${score}, FinalScore: ${finalScore}, Rank: #${finalRank}`);

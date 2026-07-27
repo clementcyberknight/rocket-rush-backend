@@ -5,12 +5,5 @@ export const CONFIG = {
   KEY_USERNAMES: process.env.KEY_USERNAMES || "rocket-rush:usernames",
   TOPIC: process.env.WS_TOPIC || "leaderboard",
   WEEK_TTL: 60 * 60 * 24 * 14,
-  ANTI_CHEAT: {
-    MAX_SCORE_RATE: 2000,
-    MAX_PLAUSIBLE_SCORE_PER_SEC: 1500,
-    MAX_PLAUSIBLE_SCORE_BASE: 5000,
-    MIN_TICK_DELTA_TIME: 0.05,
-    MIN_DELTA_SCORE: -100,
-  },
   WEEK_CHECK_INTERVAL_MS: 60_000,
 } as const;
