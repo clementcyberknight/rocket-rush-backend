@@ -2,6 +2,23 @@ import { redis } from "bun";
 import { CONFIG } from "../config";
 import type { LeaderboardEntry } from "../types";
 
+function toStr(val: unknown): string {
+  if (val === null || val === undefined) return "";
+  if (typeof val === "string") return val;
+  if (val instanceof Uint8Array || Buffer.isBuffer(val)) {
+    return new TextDecoder().decode(val);
+  }
+  return String(val);
+}
+
+function toNum(val: unknown): number {
+  if (val === null || val === undefined) return 0;
+  if (typeof val === "number") return val;
+  const str = toStr(val);
+  const parsed = parseFloat(str);
+  return isNaN(parsed) ? 0 : parsed;
+}
+
 export class LeaderboardService {
   private currentWeekKey: string;
 
@@ -30,14 +47,14 @@ export class LeaderboardService {
     week?: string
   ): Promise<LeaderboardEntry[]> {
     const key = week ?? this.currentWeekKey;
-    let raw: string[] | null = null;
+    let raw: unknown[] | null = null;
     try {
       raw = (await redis.send("ZREVRANGE", [
         key,
         "0",
         (limit - 1).toString(),
         "WITHSCORES",
-      ])) as string[] | null;
+      ])) as unknown[] | null;
     } catch (error) {
       console.error(`[LeaderboardService] Error fetching top scores for key ${key}:`, error);
       throw error;
@@ -47,13 +64,14 @@ export class LeaderboardService {
 
     const wallets: string[] = [];
     const scoreMap = new Map<string, number>();
+
     for (let i = 0; i < raw.length; i += 2) {
-      const wallet = raw[i];
-      const scoreStr = raw[i + 1];
-      if (typeof wallet === "string" && wallet.trim().length > 0) {
-        const score = scoreStr ? parseFloat(scoreStr) : 0;
-        wallets.push(wallet);
-        scoreMap.set(wallet, score);
+      const walletStr = toStr(raw[i]).trim();
+      const scoreNum = toNum(raw[i + 1]);
+
+      if (walletStr.length > 0) {
+        wallets.push(walletStr);
+        scoreMap.set(walletStr, scoreNum);
       }
     }
 
@@ -64,8 +82,14 @@ export class LeaderboardService {
       const res = (await redis.send("HMGET", [
         CONFIG.KEY_USERNAMES,
         ...wallets,
-      ])) as (string | null)[];
-      usernames = Array.isArray(res) ? res : new Array(wallets.length).fill(null);
+      ])) as unknown[] | null;
+
+      usernames = Array.isArray(res)
+        ? res.map(u => {
+            const str = toStr(u).trim();
+            return str.length > 0 ? str : null;
+          })
+        : new Array(wallets.length).fill(null);
     } catch (error) {
       console.error("[LeaderboardService] Failed to fetch usernames via HMGET:", error);
       usernames = new Array(wallets.length).fill(null);
@@ -83,11 +107,10 @@ export class LeaderboardService {
     if (!wallet || typeof wallet !== "string") return 0;
     const targetWeek = week ?? this.currentWeekKey;
     try {
-      const rank = (await redis.send("ZREVRANK", [
-        targetWeek,
-        wallet,
-      ])) as number | null;
-      return rank !== null && rank !== undefined ? rank + 1 : 0;
+      const res = await redis.send("ZREVRANK", [targetWeek, wallet]);
+      if (res === null || res === undefined) return 0;
+      const rankNum = typeof res === "number" ? res : parseInt(toStr(res), 10);
+      return !isNaN(rankNum) ? rankNum + 1 : 0;
     } catch (error) {
       console.error(`[LeaderboardService] Error fetching rank for wallet ${wallet}:`, error);
       return 0;
@@ -108,11 +131,8 @@ export class LeaderboardService {
 
     let existingScore = 0;
     try {
-      const currentScoreStr = (await redis.send("ZSCORE", [
-        targetWeek,
-        wallet,
-      ])) as string | null;
-      existingScore = currentScoreStr ? parseFloat(currentScoreStr) : 0;
+      const res = await redis.send("ZSCORE", [targetWeek, wallet]);
+      existingScore = toNum(res);
     } catch (error) {
       console.error(`[LeaderboardService] Error fetching ZSCORE for wallet ${wallet}:`, error);
       existingScore = 0;
