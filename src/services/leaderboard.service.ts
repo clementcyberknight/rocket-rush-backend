@@ -162,6 +162,17 @@ export class LeaderboardService {
     return { finalRank, finalScore };
   }
 
+  public async updateUsername(wallet: string, username: string): Promise<void> {
+    if (!wallet || typeof wallet !== "string" || !username || typeof username !== "string") return;
+    try {
+      const cleanName = username.trim();
+      console.log(`[LeaderboardService] Updating username for wallet ${wallet} -> "${cleanName}"`);
+      await redis.send("HSET", [CONFIG.KEY_USERNAMES, wallet, cleanName]);
+    } catch (error) {
+      console.error(`[LeaderboardService] Error updating username for wallet ${wallet}:`, error);
+    }
+  }
+
   public checkWeekChange(): boolean {
     const newWeek = this.getWeekKey();
     if (newWeek !== this.currentWeekKey) {

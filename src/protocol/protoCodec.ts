@@ -157,13 +157,15 @@ export enum ClientMessageType {
   GAME_TICK = 2,
   SUBMIT_SCORE = 3,
   GET_LEADERBOARD = 4,
+  UPDATE_USERNAME = 5,
 }
 
 export type ClientMessagePayload =
   | { type: ClientMessageType.START_SESSION; wallet: string; username?: string }
   | { type: ClientMessageType.GAME_TICK; sessionId: string; score: number; speed: number; level: number; timestamp: number }
   | { type: ClientMessageType.SUBMIT_SCORE; sessionId: string; wallet: string; score: number; username?: string }
-  | { type: ClientMessageType.GET_LEADERBOARD; limit?: number; week?: string };
+  | { type: ClientMessageType.GET_LEADERBOARD; limit?: number; week?: string }
+  | { type: ClientMessageType.UPDATE_USERNAME; wallet: string; username: string };
 
 export enum ServerMessageType {
   SESSION_STARTED = 1,
@@ -277,6 +279,16 @@ export function decodeClientMessage(buffer: ArrayBuffer | Uint8Array): ClientMes
         else inner.skip(tag.wireType);
       }
       return { type, limit, week };
+    } else if (type === ClientMessageType.UPDATE_USERNAME) {
+      let wallet = "", username = "";
+      while (inner.hasMore()) {
+        const tag = inner.readTag();
+        if (!tag) break;
+        if (tag.fieldNumber === 1 && tag.wireType === 2) wallet = inner.readString();
+        else if (tag.fieldNumber === 2 && tag.wireType === 2) username = inner.readString();
+        else inner.skip(tag.wireType);
+      }
+      return { type, wallet, username };
     }
     return null;
   } catch {

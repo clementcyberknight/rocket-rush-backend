@@ -147,6 +147,25 @@ export function createWebSocketHandler(serverGetter: () => AppServer) {
             });
             break;
           }
+
+          case ClientMessageType.UPDATE_USERNAME: {
+            if (!msg.wallet || !msg.username) break;
+            console.log(`[UsernameUpdate] Wallet ${msg.wallet} updating username to "${msg.username}"`);
+            await leaderboardService.updateUsername(msg.wallet, msg.username);
+
+            const freshLeaderboard = await leaderboardService.getTopScores(20);
+            sendBinary(ws, {
+              type: ServerMessageType.LEADERBOARD,
+              week: leaderboardService.getCurrentWeek(),
+              entries: freshLeaderboard,
+            });
+            broadcastBinary(serverGetter(), {
+              type: ServerMessageType.LEADERBOARD,
+              week: leaderboardService.getCurrentWeek(),
+              entries: freshLeaderboard,
+            });
+            break;
+          }
         }
       } catch (error) {
         console.error("[WebSocketHandler] Error processing message packet:", error);
