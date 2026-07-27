@@ -124,9 +124,10 @@ export class BinaryReader {
 
   readBytes(): Uint8Array {
     const len = this.readVarint();
-    const bytes = new Uint8Array(this.view.buffer, this.view.byteOffset + this.offset, len);
+    const start = this.view.byteOffset + this.offset;
+    const bytes = new Uint8Array(this.view.buffer.slice(start, start + len));
     this.offset += len;
-    return new Uint8Array(bytes);
+    return bytes;
   }
 
   readDouble(): number {

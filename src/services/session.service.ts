@@ -18,7 +18,6 @@ export class SessionService {
       flagged: false,
     };
     this.activeSessions.set(sessionId, session);
-    console.log(`[SessionStart] Created session ${sessionId} for wallet: ${wallet} (${username || 'no-username'})`);
     return session;
   }
 
@@ -32,10 +31,7 @@ export class SessionService {
 
   public processGameTick(sessionId: string, score: number): boolean {
     const session = this.activeSessions.get(sessionId);
-    if (!session) {
-      console.warn(`[AntiCheat] Telemetry tick received for unknown/expired session: ${sessionId}`);
-      return false;
-    }
+    if (!session) return false;
 
     const now = Date.now();
     const deltaTime = Math.max(
@@ -45,18 +41,11 @@ export class SessionService {
     const deltaScore = score - session.lastScore;
     const scoreRate = deltaScore / deltaTime;
 
-    const rateExceeded = scoreRate > CONFIG.ANTI_CHEAT.MAX_SCORE_RATE;
-    const negativeScoreDelta = deltaScore < CONFIG.ANTI_CHEAT.MIN_DELTA_SCORE;
-
-    if (rateExceeded || negativeScoreDelta) {
+    if (
+      deltaScore < CONFIG.ANTI_CHEAT.MIN_DELTA_SCORE ||
+      scoreRate > CONFIG.ANTI_CHEAT.MAX_SCORE_RATE
+    ) {
       session.flagged = true;
-      console.warn(
-        `[AntiCheat Flag] Session ${sessionId} FLAGGED! score=${score.toFixed(1)}, deltaScore=${deltaScore.toFixed(1)}, rate=${scoreRate.toFixed(1)} pts/s (Max allowed: ${CONFIG.ANTI_CHEAT.MAX_SCORE_RATE} pts/s)`
-      );
-    } else {
-      console.log(
-        `[AntiCheat Tick] Session ${sessionId} (#${session.tickCount + 1}): score=${score.toFixed(1)}, rate=${scoreRate.toFixed(1)} pts/s -> OK`
-      );
     }
 
     session.lastScore = score;
@@ -74,7 +63,6 @@ export class SessionService {
     const wallet = submittedWallet || session?.wallet;
 
     if (!wallet) {
-      console.warn(`[ScoreValidation] Rejected submission for session ${sessionId}: No wallet address provided`);
       return { valid: false };
     }
 
@@ -85,26 +73,15 @@ export class SessionService {
       CONFIG.ANTI_CHEAT.MAX_PLAUSIBLE_SCORE_BASE;
 
     let isCheating = false;
-    let reason = "";
-
     if (session) {
-      if (session.flagged) {
+      if (
+        session.flagged ||
+        session.tickCount === 0 ||
+        submittedScore > maxPlausibleScore
+      ) {
         isCheating = true;
-        reason = "Session was flagged during telemetry ticks (speed/score rate violation)";
-      } else if (duration > 2.0 && session.tickCount === 0) {
-        isCheating = true;
-        reason = `No telemetry ticks received during ${duration.toFixed(1)}s game session`;
-      } else if (submittedScore > maxPlausibleScore) {
-        isCheating = true;
-        reason = `Submitted score ${submittedScore.toFixed(1)} exceeds maximum plausible score ${maxPlausibleScore.toFixed(1)} for duration ${duration.toFixed(1)}s`;
       }
       this.activeSessions.delete(sessionId);
-    }
-
-    if (isCheating) {
-      console.warn(`[ScoreValidation] REJECTED score ${submittedScore.toFixed(1)} for wallet ${wallet} (${sessionId}). Reason: ${reason}`);
-    } else {
-      console.log(`[ScoreValidation] PASSED score ${submittedScore.toFixed(1)} for wallet ${wallet} (${sessionId}). Duration: ${duration.toFixed(1)}s, Ticks: ${session?.tickCount ?? 0}`);
     }
 
     return {
