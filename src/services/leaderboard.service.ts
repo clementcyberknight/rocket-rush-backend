@@ -162,14 +162,73 @@ export class LeaderboardService {
     return { finalRank, finalScore };
   }
 
-  public async updateUsername(wallet: string, username: string): Promise<void> {
-    if (!wallet || typeof wallet !== "string" || !username || typeof username !== "string") return;
+  public async updateUsername(wallet: string, username: string): Promise<{ success: boolean; error?: string }> {
+    if (!wallet || typeof wallet !== "string" || !username || typeof username !== "string") {
+      return { success: false, error: "Invalid parameters" };
+    }
     try {
       const cleanName = username.trim();
+      if (!cleanName) return { success: false, error: "Username cannot be empty" };
+
+      const lowerName = cleanName.toLowerCase();
+
+      const hsetnxResult = await redis.send("HSETNX", [CONFIG.KEY_USERNAME_INDEX, lowerName, wallet]);
+      const isNew = typeof hsetnxResult === "number" ? hsetnxResult === 1 : toNum(hsetnxResult) === 1;
+
+      if (!isNew) {
+        const existingWallet = await redis.send("HGET", [CONFIG.KEY_USERNAME_INDEX, lowerName]);
+        if (toStr(existingWallet).trim() !== wallet) {
+          console.log(`[LeaderboardService] Username "${cleanName}" is already taken by wallet ${toStr(existingWallet).trim()}`);
+          return { success: false, error: "Username already taken" };
+        }
+      }
+
+      const oldUsername = await redis.send("HGET", [CONFIG.KEY_USERNAMES, wallet]);
+      const oldUsernameStr = toStr(oldUsername).trim();
+
+      if (oldUsernameStr && oldUsernameStr.toLowerCase() !== lowerName) {
+        await redis.send("HDEL", [CONFIG.KEY_USERNAME_INDEX, oldUsernameStr.toLowerCase()]);
+      }
+
       console.log(`[LeaderboardService] Updating username for wallet ${wallet} -> "${cleanName}"`);
       await redis.send("HSET", [CONFIG.KEY_USERNAMES, wallet, cleanName]);
+
+      return { success: true };
     } catch (error) {
       console.error(`[LeaderboardService] Error updating username for wallet ${wallet}:`, error);
+      return { success: false, error: "Internal error updating username" };
+    }
+  }
+
+  public async mergeGuestScores(fromWallet: string, toWallet: string): Promise<void> {
+    if (!fromWallet || !toWallet || fromWallet === toWallet) return;
+
+    try {
+      const weekKey = this.currentWeekKey;
+
+      const guestScoreRes = await redis.send("ZSCORE", [weekKey, fromWallet]);
+      const guestScore = toNum(guestScoreRes);
+
+      if (guestScore > 0) {
+        const walletScoreRes = await redis.send("ZSCORE", [weekKey, toWallet]);
+        const walletScore = toNum(walletScoreRes);
+        const finalScore = Math.max(guestScore, walletScore);
+        await redis.send("ZADD", [weekKey, finalScore.toString(), toWallet]);
+        console.log(`[LeaderboardService] Merged score ${guestScore} from ${fromWallet} -> ${toWallet} (final: ${finalScore})`);
+      }
+
+      await redis.send("ZREM", [weekKey, fromWallet]);
+
+      const guestLowerName = await redis.send("HGET", [CONFIG.KEY_USERNAMES, fromWallet]);
+      const guestName = toStr(guestLowerName).trim();
+
+      await redis.send("HDEL", [CONFIG.KEY_USERNAMES, fromWallet]);
+
+      if (guestName) {
+        await redis.send("HDEL", [CONFIG.KEY_USERNAME_INDEX, guestName.toLowerCase()]);
+      }
+    } catch (error) {
+      console.error(`[LeaderboardService] Error merging guest scores from ${fromWallet} to ${toWallet}:`, error);
     }
   }
 

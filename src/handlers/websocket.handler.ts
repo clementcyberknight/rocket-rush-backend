@@ -147,7 +147,35 @@ export function createWebSocketHandler(serverGetter: () => AppServer) {
           case ClientMessageType.UPDATE_USERNAME: {
             if (!msg.wallet || !msg.username) break;
             console.log(`[UsernameUpdate] Wallet ${msg.wallet} updating username to "${msg.username}"`);
-            await leaderboardService.updateUsername(msg.wallet, msg.username);
+
+            const result = await leaderboardService.updateUsername(msg.wallet, msg.username);
+
+            sendBinary(ws, {
+              type: ServerMessageType.USERNAME_UPDATED,
+              success: result.success,
+              message: result.success ? "Username updated successfully" : (result.error || "Unknown error"),
+            });
+
+            if (result.success) {
+              const freshLeaderboard = await leaderboardService.getTopScores(20);
+              sendBinary(ws, {
+                type: ServerMessageType.LEADERBOARD,
+                week: leaderboardService.getCurrentWeek(),
+                entries: freshLeaderboard,
+              });
+              broadcastBinary(serverGetter(), {
+                type: ServerMessageType.LEADERBOARD,
+                week: leaderboardService.getCurrentWeek(),
+                entries: freshLeaderboard,
+              });
+            }
+            break;
+          }
+
+          case ClientMessageType.MERGE_GUEST: {
+            if (!msg.fromWallet || !msg.toWallet) break;
+            console.log(`[MergeGuest] Merging scores from ${msg.fromWallet} -> ${msg.toWallet}`);
+            await leaderboardService.mergeGuestScores(msg.fromWallet, msg.toWallet);
 
             const freshLeaderboard = await leaderboardService.getTopScores(20);
             sendBinary(ws, {
