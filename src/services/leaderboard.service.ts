@@ -26,16 +26,22 @@ export class LeaderboardService {
   }
 
   public async getTopScores(
-    limit: number = 10,
+    limit: number = 20,
     week?: string
   ): Promise<LeaderboardEntry[]> {
     const key = week ?? this.currentWeekKey;
-    const raw = (await redis.send("ZREVRANGE", [
-      key,
-      "0",
-      (limit - 1).toString(),
-      "WITHSCORES",
-    ])) as string[] | null;
+    let raw: string[] | null = null;
+    try {
+      raw = (await redis.send("ZREVRANGE", [
+        key,
+        "0",
+        (limit - 1).toString(),
+        "WITHSCORES",
+      ])) as string[] | null;
+    } catch (error) {
+      console.error(`[LeaderboardService] Error fetching top scores for key ${key}:`, error);
+      throw error;
+    }
 
     if (!raw || !Array.isArray(raw) || raw.length === 0) return [];
 
@@ -60,7 +66,8 @@ export class LeaderboardService {
         ...wallets,
       ])) as (string | null)[];
       usernames = Array.isArray(res) ? res : new Array(wallets.length).fill(null);
-    } catch {
+    } catch (error) {
+      console.error("[LeaderboardService] Failed to fetch usernames via HMGET:", error);
       usernames = new Array(wallets.length).fill(null);
     }
 
@@ -81,7 +88,8 @@ export class LeaderboardService {
         wallet,
       ])) as number | null;
       return rank !== null && rank !== undefined ? rank + 1 : 0;
-    } catch {
+    } catch (error) {
+      console.error(`[LeaderboardService] Error fetching rank for wallet ${wallet}:`, error);
       return 0;
     }
   }
@@ -105,15 +113,16 @@ export class LeaderboardService {
         wallet,
       ])) as string | null;
       existingScore = currentScoreStr ? parseFloat(currentScoreStr) : 0;
-    } catch {
+    } catch (error) {
+      console.error(`[LeaderboardService] Error fetching ZSCORE for wallet ${wallet}:`, error);
       existingScore = 0;
     }
 
     if (username && typeof username === "string") {
       try {
         await redis.send("HSET", [CONFIG.KEY_USERNAMES, wallet, username]);
-      } catch {
-        // non-critical error
+      } catch (error) {
+        console.error(`[LeaderboardService] Error setting username for wallet ${wallet}:`, error);
       }
     }
 
@@ -121,8 +130,9 @@ export class LeaderboardService {
       try {
         await redis.send("ZADD", [targetWeek, score.toString(), wallet]);
         await redis.send("EXPIRE", [targetWeek, CONFIG.WEEK_TTL.toString()]);
-      } catch {
-        // redis write exception fallback
+      } catch (error) {
+        console.error(`[LeaderboardService] Critical Redis error saving score for wallet ${wallet}:`, error);
+        throw error;
       }
     }
 
