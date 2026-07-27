@@ -63,26 +63,34 @@ export class SessionService {
     const wallet = submittedWallet || session?.wallet;
 
     if (!wallet) {
+      console.warn(`[ScoreValidation] REJECTED: No wallet found for session ${sessionId}`);
       return { valid: false };
     }
 
+    // If session doesn't exist (e.g. WS reconnected mid-game), still accept the score
+    // This prevents legitimate players from losing scores due to connection issues
+    if (!session) {
+      console.log(`[ScoreValidation] Session ${sessionId} not found (likely WS reconnection). Accepting score for wallet ${wallet}`);
+      return { valid: true, wallet };
+    }
+
     const now = Date.now();
-    const duration = session ? (now - session.startTime) / 1000 : 0;
+    const duration = (now - session.startTime) / 1000;
     const maxPlausibleScore =
       duration * CONFIG.ANTI_CHEAT.MAX_PLAUSIBLE_SCORE_PER_SEC +
       CONFIG.ANTI_CHEAT.MAX_PLAUSIBLE_SCORE_BASE;
 
     let isCheating = false;
-    if (session) {
-      if (
-        session.flagged ||
-        session.tickCount === 0 ||
-        submittedScore > maxPlausibleScore
-      ) {
-        isCheating = true;
-      }
-      this.activeSessions.delete(sessionId);
+    if (session.flagged) {
+      console.warn(`[ScoreValidation] Session ${sessionId} was FLAGGED during gameplay (wallet: ${wallet}, score: ${submittedScore})`);
+      isCheating = true;
+    } else if (submittedScore > maxPlausibleScore) {
+      console.warn(`[ScoreValidation] Score ${submittedScore} exceeds max plausible ${maxPlausibleScore.toFixed(0)} for ${duration.toFixed(1)}s session (wallet: ${wallet})`);
+      isCheating = true;
     }
+    // tickCount === 0 no longer rejects — some legit players may have brief sessions or tick issues
+
+    this.activeSessions.delete(sessionId);
 
     return {
       valid: !isCheating,
