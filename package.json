@@ -1,0 +1,19 @@
+{
+  "name": "rocket-rush-backend",
+  "version": "1.0.0",
+  "description": "Realtime Protobuf & Redis Leaderboard Backend for Rocket Rush built with Bun",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun run index.ts",
+    "dev": "bun --watch index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
