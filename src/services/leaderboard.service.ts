@@ -37,37 +37,53 @@ export class LeaderboardService {
       "WITHSCORES",
     ])) as string[] | null;
 
-    if (!raw || raw.length === 0) return [];
+    if (!raw || !Array.isArray(raw) || raw.length === 0) return [];
 
     const wallets: string[] = [];
     const scoreMap = new Map<string, number>();
     for (let i = 0; i < raw.length; i += 2) {
-      const wallet = raw[i]!;
-      const score = parseFloat(raw[i + 1]!);
-      wallets.push(wallet);
-      scoreMap.set(wallet, score);
+      const wallet = raw[i];
+      const scoreStr = raw[i + 1];
+      if (typeof wallet === "string" && wallet.trim().length > 0) {
+        const score = scoreStr ? parseFloat(scoreStr) : 0;
+        wallets.push(wallet);
+        scoreMap.set(wallet, score);
+      }
     }
 
-    const usernames = (await redis.send("HMGET", [
-      CONFIG.KEY_USERNAMES,
-      ...wallets,
-    ])) as (string | null)[];
+    if (wallets.length === 0) return [];
+
+    let usernames: (string | null)[] = [];
+    try {
+      const res = (await redis.send("HMGET", [
+        CONFIG.KEY_USERNAMES,
+        ...wallets,
+      ])) as (string | null)[];
+      usernames = Array.isArray(res) ? res : new Array(wallets.length).fill(null);
+    } catch {
+      usernames = new Array(wallets.length).fill(null);
+    }
 
     return wallets.map((wallet, i) => ({
       rank: i + 1,
       wallet,
       username: usernames[i] ?? null,
-      score: scoreMap.get(wallet)!,
+      score: scoreMap.get(wallet) ?? 0,
     }));
   }
 
   public async getRank(wallet: string, week?: string): Promise<number> {
+    if (!wallet || typeof wallet !== "string") return 0;
     const targetWeek = week ?? this.currentWeekKey;
-    const rank = (await redis.send("ZREVRANK", [
-      targetWeek,
-      wallet,
-    ])) as number | null;
-    return rank !== null ? rank + 1 : 0;
+    try {
+      const rank = (await redis.send("ZREVRANK", [
+        targetWeek,
+        wallet,
+      ])) as number | null;
+      return rank !== null && rank !== undefined ? rank + 1 : 0;
+    } catch {
+      return 0;
+    }
   }
 
   public async submitScore(
@@ -76,22 +92,38 @@ export class LeaderboardService {
     username?: string,
     week?: string
   ): Promise<{ finalRank: number; finalScore: number }> {
+    if (!wallet || typeof wallet !== "string") {
+      return { finalRank: 0, finalScore: score };
+    }
+
     const targetWeek = week ?? this.currentWeekKey;
 
-    const currentScoreStr = (await redis.send("ZSCORE", [
-      targetWeek,
-      wallet,
-    ])) as string | null;
+    let existingScore = 0;
+    try {
+      const currentScoreStr = (await redis.send("ZSCORE", [
+        targetWeek,
+        wallet,
+      ])) as string | null;
+      existingScore = currentScoreStr ? parseFloat(currentScoreStr) : 0;
+    } catch {
+      existingScore = 0;
+    }
 
-    const existingScore = currentScoreStr ? parseFloat(currentScoreStr) : 0;
-
-    if (username) {
-      await redis.send("HSET", [CONFIG.KEY_USERNAMES, wallet, username]);
+    if (username && typeof username === "string") {
+      try {
+        await redis.send("HSET", [CONFIG.KEY_USERNAMES, wallet, username]);
+      } catch {
+        // non-critical error
+      }
     }
 
     if (score > existingScore) {
-      await redis.send("ZADD", [targetWeek, score.toString(), wallet]);
-      await redis.send("EXPIRE", [targetWeek, CONFIG.WEEK_TTL.toString()]);
+      try {
+        await redis.send("ZADD", [targetWeek, score.toString(), wallet]);
+        await redis.send("EXPIRE", [targetWeek, CONFIG.WEEK_TTL.toString()]);
+      } catch {
+        // redis write exception fallback
+      }
     }
 
     const finalRank = await this.getRank(wallet, targetWeek);
