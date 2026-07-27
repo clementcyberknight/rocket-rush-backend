@@ -95,12 +95,15 @@ export class LeaderboardService {
       usernames = new Array(wallets.length).fill(null);
     }
 
-    return wallets.map((wallet, i) => ({
-      rank: i + 1,
-      wallet,
-      username: usernames[i] ?? null,
-      score: scoreMap.get(wallet) ?? 0,
-    }));
+    return wallets.map((wallet, i) => {
+      const isAnon = wallet === "anonymous" || (wallet.startsWith("guest_") && !usernames[i]);
+      return {
+        rank: i + 1,
+        wallet,
+        username: isAnon ? null : (usernames[i] ?? null),
+        score: scoreMap.get(wallet) ?? 0,
+      };
+    });
   }
 
   public async getRank(wallet: string, week?: string): Promise<number> {
@@ -138,9 +141,10 @@ export class LeaderboardService {
       existingScore = 0;
     }
 
-    if (username && typeof username === "string") {
+    // Only set username if wallet is NOT generic 'anonymous'
+    if (wallet !== "anonymous" && username && typeof username === "string" && username.trim().length > 0) {
       try {
-        await redis.send("HSET", [CONFIG.KEY_USERNAMES, wallet, username]);
+        await redis.send("HSET", [CONFIG.KEY_USERNAMES, wallet, username.trim()]);
       } catch (error) {
         console.error(`[LeaderboardService] Error setting username for wallet ${wallet}:`, error);
       }
@@ -163,7 +167,7 @@ export class LeaderboardService {
   }
 
   public async updateUsername(wallet: string, username: string): Promise<{ success: boolean; error?: string }> {
-    if (!wallet || typeof wallet !== "string" || !username || typeof username !== "string") {
+    if (!wallet || typeof wallet !== "string" || wallet === "anonymous" || !username || typeof username !== "string") {
       return { success: false, error: "Invalid parameters" };
     }
     try {
@@ -189,7 +193,6 @@ export class LeaderboardService {
       if (oldUsernameStr && oldUsernameStr.toLowerCase() !== lowerName) {
         await redis.send("HDEL", [CONFIG.KEY_USERNAME_INDEX, oldUsernameStr.toLowerCase()]);
       }
-
       console.log(`[LeaderboardService] Updating username for wallet ${wallet} -> "${cleanName}"`);
       await redis.send("HSET", [CONFIG.KEY_USERNAMES, wallet, cleanName]);
 
