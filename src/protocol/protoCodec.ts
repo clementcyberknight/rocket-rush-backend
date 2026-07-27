@@ -51,7 +51,7 @@ export class BinaryWriter {
   writeDouble(fieldNumber: number, val: number) {
     this.writeTag(fieldNumber, 1);
     this.ensureCapacity(8);
-    const dv = new DataView(this.buffer.buffer, this.offset, 8);
+    const dv = new DataView(this.buffer.buffer, this.buffer.byteOffset + this.offset, 8);
     dv.setFloat64(0, val, true);
     this.offset += 8;
   }
@@ -59,7 +59,7 @@ export class BinaryWriter {
   writeFloat(fieldNumber: number, val: number) {
     this.writeTag(fieldNumber, 5);
     this.ensureCapacity(4);
-    const dv = new DataView(this.buffer.buffer, this.offset, 4);
+    const dv = new DataView(this.buffer.buffer, this.buffer.byteOffset + this.offset, 4);
     dv.setFloat32(0, val, true);
     this.offset += 4;
   }
