@@ -23,6 +23,7 @@ export function broadcastBinary(server: AppServer, msg: ServerMessagePayload): v
 export async function broadcastTopLeaderboard(server: AppServer): Promise<void> {
   try {
     const leaderboard = await leaderboardService.getTopScores(20);
+    console.log(`[LeaderboardBroadcast] Broadcasting top ${leaderboard.length} entries to all clients`);
     broadcastBinary(server, {
       type: ServerMessageType.LEADERBOARD,
       week: leaderboardService.getCurrentWeek(),
@@ -39,6 +40,7 @@ export function createWebSocketHandler(serverGetter: () => AppServer) {
       try {
         ws.subscribe(CONFIG.TOPIC);
         const topScores = await leaderboardService.getTopScores(20);
+        console.log(`[WebSocketConnect] Client connected. Sending ${topScores.length} top leaderboard entries`);
         sendBinary(ws, {
           type: ServerMessageType.LEADERBOARD,
           week: leaderboardService.getCurrentWeek(),
@@ -80,6 +82,7 @@ export function createWebSocketHandler(serverGetter: () => AppServer) {
           }
 
           case ClientMessageType.SUBMIT_SCORE: {
+            console.log(`[ScoreSubmit] Received score submission: ${msg.score} for wallet: ${msg.wallet} (Session: ${msg.sessionId})`);
             const validation = sessionService.validateScoreSubmission(
               msg.sessionId,
               msg.wallet,
@@ -87,6 +90,7 @@ export function createWebSocketHandler(serverGetter: () => AppServer) {
             );
 
             if (!validation.valid || !validation.wallet) {
+              console.warn(`[ScoreSubmit] Score submission REJECTED for ${msg.wallet}`);
               sendBinary(ws, {
                 type: ServerMessageType.SCORE_SUBMITTED,
                 score: msg.score,
@@ -102,6 +106,9 @@ export function createWebSocketHandler(serverGetter: () => AppServer) {
               msg.username
             );
 
+            console.log(`[ScoreSubmit SUCCESS] Wallet: ${validation.wallet}, Submitted: ${msg.score}, FinalScore: ${finalScore}, Rank: #${finalRank}`);
+
+            // 1. Send submission result to submitting client
             sendBinary(ws, {
               type: ServerMessageType.SCORE_SUBMITTED,
               score: finalScore,
@@ -109,7 +116,22 @@ export function createWebSocketHandler(serverGetter: () => AppServer) {
               valid: true,
             });
 
-            await broadcastTopLeaderboard(serverGetter());
+            // 2. Fetch updated top 20 rankings
+            const freshLeaderboard = await leaderboardService.getTopScores(20);
+
+            // 3. Send fresh leaderboard directly to the submitting client
+            sendBinary(ws, {
+              type: ServerMessageType.LEADERBOARD,
+              week: leaderboardService.getCurrentWeek(),
+              entries: freshLeaderboard,
+            });
+
+            // 4. Broadcast fresh leaderboard to all other connected sockets
+            broadcastBinary(serverGetter(), {
+              type: ServerMessageType.LEADERBOARD,
+              week: leaderboardService.getCurrentWeek(),
+              entries: freshLeaderboard,
+            });
             break;
           }
 
