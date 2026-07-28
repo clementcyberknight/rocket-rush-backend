@@ -231,6 +231,8 @@ export class LeaderboardService {
         ...wallets,
       ])) as unknown[] | null;
 
+      console.log(`[LeaderboardService] HMGET key=${CONFIG.KEY_USERNAMES} wallets=${wallets.length} res=${JSON.stringify(res)}`);
+
       usernames = Array.isArray(res)
         ? res.map(u => {
             const str = toStr(u).trim();
@@ -373,7 +375,7 @@ export class LeaderboardService {
       await redis.send("HSET", [CONFIG.KEY_USERNAMES, wallet, clean]);
       await redis.send("HSET", [CONFIG.KEY_USERNAMES_REVERSE, lower, wallet]);
 
-      console.log(`[LeaderboardService] Updated username for wallet ${wallet} -> "${clean}"`);
+      console.log(`[LeaderboardService] Updated username for wallet ${wallet} -> "${clean}" | key=${CONFIG.KEY_USERNAMES} reverse=${CONFIG.KEY_USERNAMES_REVERSE}`);
       return { success: true };
     } catch (error) {
       console.error(`[LeaderboardService] Error updating username for wallet ${wallet}:`, error);
