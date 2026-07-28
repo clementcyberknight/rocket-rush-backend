@@ -485,8 +485,6 @@ export class LeaderboardService {
       return { success: false, error: "Server error" };
     }
   }
-    }
-  }
 
   public checkWeekChange(): boolean {
     const newWeek = this.getWeekKey();
