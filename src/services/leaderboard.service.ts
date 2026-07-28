@@ -163,6 +163,7 @@ export class LeaderboardService {
         await redis.send("HGET", [CONFIG.KEY_USERNAMES, fromWallet])
       );
       if (guestUsername) {
+        const guestLower = guestUsername.toLowerCase();
         const existingUsername = toStr(
           await redis.send("HGET", [CONFIG.KEY_USERNAMES, toWallet])
         );
@@ -174,8 +175,13 @@ export class LeaderboardService {
           ]);
           await redis.send("HSET", [
             CONFIG.KEY_USERNAMES_REVERSE,
-            guestUsername.toLowerCase(),
+            guestLower,
             toWallet,
+          ]);
+        } else {
+          await redis.send("HDEL", [
+            CONFIG.KEY_USERNAMES_REVERSE,
+            guestLower,
           ]);
         }
         await redis.send("HDEL", [CONFIG.KEY_USERNAMES, fromWallet]);
@@ -245,11 +251,11 @@ export class LeaderboardService {
     }
 
     return wallets.map((wallet, i) => {
-      const isAnon = wallet === "anonymous" || (wallet.startsWith("guest_") && !usernames[i]);
+      const resolvedUsername = (usernames[i] && usernames[i].length > 0) ? usernames[i] : null;
       return {
         rank: i + 1,
         wallet,
-        username: isAnon ? null : (usernames[i] ?? null),
+        username: resolvedUsername,
         score: scoreMap.get(wallet) ?? 0,
       };
     });

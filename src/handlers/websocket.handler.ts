@@ -178,6 +178,7 @@ export function createWebSocketHandler(serverGetter: () => AppServer) {
               type: ServerMessageType.USERNAME_UPDATED,
               success: result.success,
               message: result.success ? "Callsign updated!" : (result.error || "Update failed"),
+              username: msg.username.trim(),
             });
 
             if (result.success) {
