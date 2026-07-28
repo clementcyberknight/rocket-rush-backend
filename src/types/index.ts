@@ -1,34 +1,41 @@
-import type { Server, ServerWebSocket } from "bun";
+import type { Server, ServerWebSocket } from "bun"
 
-export interface ActiveSession {
-  sessionId: string;
-  wallet: string;
-  username?: string;
-  startTime: number;
-  lastTickTime: number;
-  lastTickScore: number;
-  lastTickSpeed: number;
-  lastTickLevel: number;
-  tickCount: number;
-  flagged: boolean;
+export type IdentityKind = "wallet" | "rush"
+
+export interface UserRecord {
+  uid: string
+  username: string | null
+  identityKind: IdentityKind
+  identity: string
+  createdAt: number
+  updatedAt: number
+  lastSeen: number
+  highScore: number
+  totalGames: number
 }
 
 export interface LeaderboardEntry {
-  rank: number;
-  wallet: string;
-  username: string | null;
-  score: number;
+  rank: number
+  uid: string
+  username: string | null
+  score: number
+}
+
+export interface GameSession {
+  sessionId: string
+  uid: string
+  startTime: number
+  lastTickScore: number
+  lastTickSpeed: number
+  lastTickLevel: number
+  lastTickTime: number
+  tickCount: number
+  flagged: boolean
 }
 
 export interface WebSocketData {
-  subscribedAt?: number;
+  uid?: string
 }
 
-export type AppWebSocket = ServerWebSocket<WebSocketData>;
-export type AppServer = Server<WebSocketData>;
-
-export interface ScoreSubmissionResult {
-  score: number;
-  rank: number;
-  valid: boolean;
-}
+export type AppWebSocket = ServerWebSocket<WebSocketData>
+export type AppServer = Server<WebSocketData>

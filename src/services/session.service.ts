@@ -1,156 +1,197 @@
-import type { ActiveSession } from "../types";
-import { CONFIG } from "../config";
+import { getRedis } from "../redis/client"
+import { Keys } from "../redis/keys"
+import { CONFIG } from "../config"
+import type { GameSession } from "../types"
 
 export class SessionService {
-  private activeSessions = new Map<string, ActiveSession>();
+  async createSession(uid: string): Promise<GameSession> {
+    const sessionId = `sess_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 8)}`
+    const now = Date.now()
+    const redis = getRedis()
 
-  public startSession(wallet: string, username?: string): ActiveSession {
-    const sessionId = `sess_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-    const now = Date.now();
-    const session: ActiveSession = {
+    const session: GameSession = {
       sessionId,
-      wallet,
-      username,
+      uid,
       startTime: now,
-      lastTickTime: now,
       lastTickScore: 0,
       lastTickSpeed: 0,
       lastTickLevel: 0,
+      lastTickTime: now,
       tickCount: 0,
       flagged: false,
-    };
-    this.activeSessions.set(sessionId, session);
-    return session;
+    }
+
+    await redis.hset(Keys.session(sessionId), {
+      uid,
+      startTime: now.toString(),
+      lastTickScore: "0",
+      lastTickSpeed: "0",
+      lastTickLevel: "0",
+      lastTickTime: now.toString(),
+      tickCount: "0",
+      flagged: "0",
+    })
+
+    await redis.expire(Keys.session(sessionId), CONFIG.SESSION_TTL)
+
+    return session
   }
 
-  public getSession(sessionId: string): ActiveSession | undefined {
-    return this.activeSessions.get(sessionId);
+  async getSession(sessionId: string): Promise<GameSession | null> {
+    const redis = getRedis()
+    const raw = await redis.hgetall(Keys.session(sessionId))
+    if (!raw || Object.keys(raw).length === 0) return null
+    return this.deserializeSession(sessionId, raw)
   }
 
-  public processTick(
+  async processTick(
     sessionId: string,
     score: number,
     speed: number,
     level: number,
-    timestamp: number
-  ): void {
-    const session = this.activeSessions.get(sessionId);
-    if (!session || session.flagged) return;
+    timestamp: number,
+    x = 0,
+    y = 0,
+    z = 0
+  ): Promise<boolean> {
+    const redis = getRedis()
+    const key = Keys.session(sessionId)
+    const raw = await redis.hgetall(key)
+    if (!raw || Object.keys(raw).length === 0) return false
 
-    const { ANTI_CHEAT: AC } = CONFIG;
-    const now = Date.now();
-    const deltaTime = (timestamp - session.lastTickTime) / 1000;
+    const session = this.deserializeSession(sessionId, raw)
+    if (session.flagged) return false
+
+    const { ANTI_CHEAT: AC } = CONFIG
+    const now = Date.now()
+    const deltaTime = (timestamp - session.lastTickTime) / 1000
 
     if (session.tickCount > 0 && deltaTime > 0) {
-      if (deltaTime > AC.TICK_INTERVAL_MAX) return;
-
+      if (deltaTime > AC.TICK_INTERVAL_MAX) return false
       if (Math.abs(timestamp - now) > AC.CLOCK_DRIFT_MS) {
-        session.flagged = true;
-        return;
+        await redis.hset(key, { flagged: "1" })
+        return false
       }
-
       if (score < session.lastTickScore - AC.SCORE_MONOTONIC_GRACE) {
-        session.flagged = true;
-        return;
+        await redis.hset(key, { flagged: "1" })
+        return false
       }
-
       if (level < session.lastTickLevel) {
-        session.flagged = true;
-        return;
+        await redis.hset(key, { flagged: "1" })
+        return false
       }
-
       if (speed < session.lastTickSpeed - 0.02) {
-        session.flagged = true;
-        return;
+        await redis.hset(key, { flagged: "1" })
+        return false
       }
-
-      const speedAccel = (speed - session.lastTickSpeed) / deltaTime;
+      const speedAccel = (speed - session.lastTickSpeed) / deltaTime
       if (speedAccel > AC.SPEED_ACCEL_MAX) {
-        session.flagged = true;
-        return;
+        await redis.hset(key, { flagged: "1" })
+        return false
       }
-
-      const maxSpeedAtLevel = AC.SPEED_BASE + level * AC.SPEED_PER_LEVEL + AC.SPEED_GRACE;
-      if (speed > maxSpeedAtLevel) {
-        session.flagged = true;
-        return;
+      const maxSpeed = AC.SPEED_BASE + level * AC.SPEED_PER_LEVEL + AC.SPEED_GRACE
+      if (speed > maxSpeed) {
+        await redis.hset(key, { flagged: "1" })
+        return false
       }
-
-      const expectedLevel = Math.floor(score / AC.SCORE_UNITS_PER_LEVEL);
+      const expectedLevel = Math.floor(score / AC.SCORE_UNITS_PER_LEVEL)
       if (Math.abs(level - expectedLevel) > AC.LEVEL_TOLERANCE) {
-        session.flagged = true;
-        return;
+        await redis.hset(key, { flagged: "1" })
+        return false
       }
     }
 
-    session.lastTickScore = score;
-    session.lastTickSpeed = speed;
-    session.lastTickLevel = level;
-    session.lastTickTime = timestamp;
-    session.tickCount++;
+    await redis.hset(key, {
+      lastTickScore: score.toString(),
+      lastTickSpeed: speed.toString(),
+      lastTickLevel: level.toString(),
+      lastTickTime: timestamp.toString(),
+      tickCount: (session.tickCount + 1).toString(),
+    })
+    await redis.expire(key, CONFIG.SESSION_TTL)
+
+    await redis.rpush(Keys.tickList(sessionId), `${z},${x},${y}`)
+    await redis.expire(Keys.tickList(sessionId), CONFIG.SESSION_TTL)
+
+    return true
   }
 
-  public validateScoreSubmission(
+  async validateScore(
     sessionId: string,
-    wallet: string,
+    uid: string,
     score: number
-  ): { valid: boolean; reason?: string } {
-    const session = this.activeSessions.get(sessionId);
-    if (!session) {
-      return { valid: false, reason: "Session not found" };
+  ): Promise<{ valid: boolean; reason?: string }> {
+    const redis = getRedis()
+    const key = Keys.session(sessionId)
+    const raw = await redis.hgetall(key)
+    if (!raw || Object.keys(raw).length === 0) {
+      return { valid: false, reason: "Session not found" }
+    }
+
+    const session = this.deserializeSession(sessionId, raw)
+
+    if (session.uid !== uid) {
+      await redis.hset(key, { flagged: "1" })
+      return { valid: false, reason: "Wallet mismatch" }
     }
 
     if (session.flagged) {
-      return { valid: false, reason: "Session flagged" };
-    }
-
-    if (session.wallet !== wallet) {
-      session.flagged = true;
-      return { valid: false, reason: "Wallet mismatch" };
+      return { valid: false, reason: "Session flagged for suspicious activity" }
     }
 
     if (score <= 0) {
-      return { valid: false, reason: "Score must be positive" };
+      return { valid: false, reason: "Score must be positive" }
     }
 
-    const { ANTI_CHEAT: AC } = CONFIG;
+    const { ANTI_CHEAT: AC } = CONFIG
 
     if (session.tickCount >= AC.MIN_TICK_COUNT) {
-      const now = Date.now();
-      const timeSinceLastTick = (now - session.lastTickTime) / 1000;
+      const now = Date.now()
+      const timeSinceLastTick = (now - session.lastTickTime) / 1000
 
       if (timeSinceLastTick <= AC.TICK_INTERVAL_MAX) {
         if (score < session.lastTickScore - AC.SCORE_MONOTONIC_GRACE) {
-          session.flagged = true;
-          return { valid: false, reason: "Score cannot decrease" };
+          await redis.hset(key, { flagged: "1" })
+          return { valid: false, reason: "Score cannot decrease" }
         }
 
-        const maxSpeedAtLevel = AC.SPEED_BASE + session.lastTickLevel * AC.SPEED_PER_LEVEL + AC.SPEED_GRACE;
-        const maxPossibleIncrease = maxSpeedAtLevel * AC.SCORE_PER_UNIT_SPEED * Math.max(timeSinceLastTick, 0.5) * AC.SCORE_TOLERANCE;
+        const maxSpeed = AC.SPEED_BASE + session.lastTickLevel * AC.SPEED_PER_LEVEL + AC.SPEED_GRACE
+        const maxIncrease = maxSpeed * AC.SCORE_PER_UNIT_SPEED * Math.max(timeSinceLastTick, 0.5) * AC.SCORE_TOLERANCE
 
-        if (score - session.lastTickScore > maxPossibleIncrease) {
-          session.flagged = true;
-          return { valid: false, reason: "Score increase exceeds plausible maximum" };
+        if (score - session.lastTickScore > maxIncrease) {
+          await redis.hset(key, { flagged: "1" })
+          return { valid: false, reason: "Score increase exceeds plausible maximum" }
         }
 
-        const expectedLevel = Math.floor(score / AC.SCORE_UNITS_PER_LEVEL);
+        const expectedLevel = Math.floor(score / AC.SCORE_UNITS_PER_LEVEL)
         if (Math.abs(session.lastTickLevel - expectedLevel) > AC.LEVEL_TOLERANCE) {
-          session.flagged = true;
-          return { valid: false, reason: "Level mismatch with score" };
+          await redis.hset(key, { flagged: "1" })
+          return { valid: false, reason: "Level mismatch with score" }
         }
       }
     }
 
-    return { valid: true };
+    return { valid: true }
   }
 
-  public deleteSession(sessionId: string): boolean {
-    return this.activeSessions.delete(sessionId);
+  async endSession(sessionId: string): Promise<void> {
+    const redis = getRedis()
+    await redis.del(Keys.session(sessionId))
   }
 
-  public clearAll(): void {
-    this.activeSessions.clear();
+  private deserializeSession(sessionId: string, raw: Record<string, string>): GameSession {
+    return {
+      sessionId,
+      uid: raw.uid || "",
+      startTime: parseInt(raw.startTime || "0") || 0,
+      lastTickScore: parseFloat(raw.lastTickScore || "0") || 0,
+      lastTickSpeed: parseFloat(raw.lastTickSpeed || "0") || 0,
+      lastTickLevel: parseInt(raw.lastTickLevel || "0") || 0,
+      lastTickTime: parseInt(raw.lastTickTime || "0") || 0,
+      tickCount: parseInt(raw.tickCount || "0") || 0,
+      flagged: raw.flagged === "1",
+    }
   }
 }
 
-export const sessionService = new SessionService();
+export const sessionService = new SessionService()

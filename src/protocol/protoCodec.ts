@@ -164,7 +164,7 @@ export enum ClientMessageType {
 
 export type ClientMessagePayload =
   | { type: ClientMessageType.START_SESSION; wallet: string; username?: string }
-  | { type: ClientMessageType.GAME_TICK; sessionId: string; score: number; speed: number; level: number; timestamp: number }
+  | { type: ClientMessageType.GAME_TICK; sessionId: string; score: number; speed: number; level: number; timestamp: number; x: number; y: number; z: number }
   | { type: ClientMessageType.SUBMIT_SCORE; sessionId: string; wallet: string; score: number; username?: string }
   | { type: ClientMessageType.GET_LEADERBOARD; limit?: number; week?: string }
   | { type: ClientMessageType.UPDATE_USERNAME; wallet: string; username: string }
@@ -188,7 +188,7 @@ export type LeaderboardEntry = {
 };
 
 export type ServerMessagePayload =
-  | { type: ServerMessageType.SESSION_STARTED; sessionId: string }
+  | { type: ServerMessageType.SESSION_STARTED; sessionId: string; uid: string; ghost?: Uint8Array }
   | { type: ServerMessageType.LEADERBOARD; week: string; entries: LeaderboardEntry[] }
   | { type: ServerMessageType.SCORE_SUBMITTED; score: number; rank: number; valid: boolean }
   | { type: ServerMessageType.ERROR; message: string }
@@ -262,7 +262,7 @@ export function decodeClientMessage(buffer: ArrayBuffer | Uint8Array): ClientMes
       }
       return { type, wallet, username };
     } else if (type === ClientMessageType.GAME_TICK) {
-      let sessionId = "", score = 0, speed = 0, level = 0, timestamp = 0;
+      let sessionId = "", score = 0, speed = 0, level = 0, timestamp = 0, x = 0, y = 0, z = 0;
       while (inner.hasMore()) {
         const tag = inner.readTag();
         if (!tag) break;
@@ -271,9 +271,12 @@ export function decodeClientMessage(buffer: ArrayBuffer | Uint8Array): ClientMes
         else if (tag.fieldNumber === 3 && tag.wireType === 5) speed = inner.readFloat();
         else if (tag.fieldNumber === 4 && tag.wireType === 0) level = inner.readVarint();
         else if (tag.fieldNumber === 5 && tag.wireType === 1) timestamp = inner.readDouble();
+        else if (tag.fieldNumber === 6 && tag.wireType === 5) x = inner.readFloat();
+        else if (tag.fieldNumber === 7 && tag.wireType === 5) y = inner.readFloat();
+        else if (tag.fieldNumber === 8 && tag.wireType === 1) z = inner.readDouble();
         else inner.skip(tag.wireType);
       }
-      return { type, sessionId, score, speed, level, timestamp };
+      return { type, sessionId, score, speed, level, timestamp, x, y, z };
     } else if (type === ClientMessageType.SUBMIT_SCORE) {
       let sessionId = "", wallet = "", score = 0, username: string | undefined;
       while (inner.hasMore()) {
@@ -340,6 +343,8 @@ export function encodeServerMessage(msg: ServerMessagePayload): Uint8Array {
   const inner = new BinaryWriter();
   if (msg.type === ServerMessageType.SESSION_STARTED) {
     inner.writeString(1, msg.sessionId);
+    if (msg.uid) inner.writeString(2, msg.uid);
+    if (msg.ghost) inner.writeBytes(3, msg.ghost);
   } else if (msg.type === ServerMessageType.LEADERBOARD) {
     inner.writeString(1, msg.week);
     for (const entry of msg.entries) {
@@ -389,13 +394,15 @@ export function decodeServerMessage(buffer: ArrayBuffer | Uint8Array): ServerMes
 
     if (type === ServerMessageType.SESSION_STARTED) {
       let sessionId = "";
+      let uid = "";
       while (inner.hasMore()) {
         const tag = inner.readTag();
         if (!tag) break;
         if (tag.fieldNumber === 1 && tag.wireType === 2) sessionId = inner.readString();
+        else if (tag.fieldNumber === 2 && tag.wireType === 2) uid = inner.readString();
         else inner.skip(tag.wireType);
       }
-      return { type, sessionId };
+      return { type, sessionId, uid };
     } else if (type === ServerMessageType.LEADERBOARD) {
       let week = "";
       const entries: LeaderboardEntry[] = [];
