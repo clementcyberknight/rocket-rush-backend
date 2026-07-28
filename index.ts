@@ -1,3 +1,3 @@
-import { startServer } from "./src/server";
+import { startServer } from "./src/server"
 
-export const server = startServer();
+startServer()
