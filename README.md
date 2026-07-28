@@ -1,6 +1,7 @@
 # Rocket Rush Realtime Backend
 
 An open-source, ultra-fast, high-concurrency backend for **Rocket Rush** built with **Bun.js**, **Redis**, and custom lightweight **Protocol Buffers (Protobuf)** over WebSockets.
+(to scale vertically)
 
 ---
 
