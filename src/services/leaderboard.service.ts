@@ -24,8 +24,6 @@ const profanityList: ReadonlySet<string> = new Set([
   "slut", "whore", "bastard", "nigger", "fag", "retard", "twat",
 ]);
 
-const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 export class LeaderboardService {
   private currentWeekKey: string;
   private rateLimitMap = new Map<string, number>();
@@ -60,10 +58,6 @@ export class LeaderboardService {
     }
     this.rateLimitMap.set(key, now);
     return true;
-  }
-
-  private reserveKey(username: string): string {
-    return `rocket-rush:username:reserved:${username.toLowerCase()}`;
   }
 
   public validateUsernameFormat(username: string): { valid: boolean; error?: string } {
@@ -115,82 +109,10 @@ export class LeaderboardService {
         return { available: false, error: `"${clean}" is already taken` };
       }
 
-      const reserved = toStr(
-        await redis.send("GET", [this.reserveKey(clean)])
-      );
-      if (reserved && reserved !== wallet) {
-        return { available: false, error: `"${clean}" is currently reserved` };
-      }
-
       return { available: true };
     } catch (error) {
       console.error("[LeaderboardService] Error checking username availability:", error);
       return { available: false, error: "Server error checking username" };
-    }
-  }
-
-  public async reserveUsername(
-    wallet: string,
-    username: string
-  ): Promise<{ success: boolean; error?: string }> {
-    if (!wallet || typeof wallet !== "string" || wallet === "anonymous") {
-      return { success: false, error: "Invalid wallet" };
-    }
-
-    const availability = await this.checkUsernameAvailability(username, wallet);
-    if (!availability.available) {
-      return { success: false, error: availability.error };
-    }
-
-    const clean = username.trim();
-    const lower = clean.toLowerCase();
-
-    try {
-      await redis.send("SET", [
-        this.reserveKey(clean),
-        wallet,
-        "EX",
-        CONFIG.USERNAME_RESERVATION_TTL.toString(),
-        "NX",
-      ]);
-
-      const previousOwner = toStr(
-        await redis.send("HGET", [CONFIG.KEY_USERNAMES_REVERSE, lower])
-      );
-
-      await redis.send("HSET", [
-        CONFIG.KEY_USERNAMES,
-        wallet,
-        clean,
-      ]);
-      await redis.send("HSET", [
-        CONFIG.KEY_USERNAMES_REVERSE,
-        lower,
-        wallet,
-      ]);
-
-      if (previousOwner && previousOwner !== wallet) {
-        const oldUsername = toStr(
-          await redis.send("HGET", [CONFIG.KEY_USERNAMES, previousOwner])
-        );
-        if (oldUsername.toLowerCase() === lower) {
-          await redis.send("HDEL", [
-            CONFIG.KEY_USERNAMES,
-            previousOwner,
-          ]);
-          await redis.send("HDEL", [
-            CONFIG.KEY_USERNAMES_REVERSE,
-            lower,
-          ]);
-          console.log(`[LeaderboardService] Unlinked username "${clean}" from previous owner ${previousOwner}`);
-        }
-      }
-
-      console.log(`[LeaderboardService] Reserved username "${clean}" for wallet ${wallet}`);
-      return { success: true };
-    } catch (error) {
-      console.error("[LeaderboardService] Error reserving username:", error);
-      return { success: false, error: "Server error reserving username" };
     }
   }
 
@@ -264,29 +186,6 @@ export class LeaderboardService {
       );
     } catch (error) {
       console.error("[LeaderboardService] Error merging guest scores:", error);
-    }
-  }
-
-  public async lookupUuid(wallet: string): Promise<string | null> {
-    if (!wallet || typeof wallet !== "string") return null;
-    if (uuidPattern.test(wallet)) return wallet;
-    try {
-      const uuid = toStr(
-        await redis.send("HGET", [CONFIG.KEY_UUID_INDEX, wallet])
-      );
-      return uuid || null;
-    } catch {
-      return null;
-    }
-  }
-
-  public async bindUuid(wallet: string, uuid: string): Promise<void> {
-    if (!wallet || !uuid || wallet === "anonymous") return;
-    if (!uuidPattern.test(uuid)) return;
-    try {
-      await redis.send("HSET", [CONFIG.KEY_UUID_INDEX, wallet, uuid]);
-    } catch (error) {
-      console.error("[LeaderboardService] Error binding UUID:", error);
     }
   }
 
@@ -394,18 +293,21 @@ export class LeaderboardService {
         await redis.send("HGET", [CONFIG.KEY_USERNAMES, wallet])
       );
       if (!existingUsername) {
-        try {
-          const clean = username.trim();
-          const lower = clean.toLowerCase();
-          const existingOwner = toStr(
-            await redis.send("HGET", [CONFIG.KEY_USERNAMES_REVERSE, lower])
-          );
-          if (!existingOwner || existingOwner === wallet) {
-            await redis.send("HSET", [CONFIG.KEY_USERNAMES, wallet, clean]);
-            await redis.send("HSET", [CONFIG.KEY_USERNAMES_REVERSE, lower, wallet]);
+        const validation = this.validateUsernameFormat(username);
+        if (validation.valid) {
+          try {
+            const clean = username.trim();
+            const lower = clean.toLowerCase();
+            const existingOwner = toStr(
+              await redis.send("HGET", [CONFIG.KEY_USERNAMES_REVERSE, lower])
+            );
+            if (!existingOwner || existingOwner === wallet) {
+              await redis.send("HSET", [CONFIG.KEY_USERNAMES, wallet, clean]);
+              await redis.send("HSET", [CONFIG.KEY_USERNAMES_REVERSE, lower, wallet]);
+            }
+          } catch (error) {
+            console.error(`[LeaderboardService] Error setting username for wallet ${wallet}:`, error);
           }
-        } catch (error) {
-          console.error(`[LeaderboardService] Error setting username for wallet ${wallet}:`, error);
         }
       }
     }
@@ -452,12 +354,6 @@ export class LeaderboardService {
       );
 
       if (existingOwner && existingOwner !== wallet) {
-        const reserved = toStr(
-          await redis.send("GET", [this.reserveKey(clean)])
-        );
-        if (reserved && reserved !== wallet) {
-          return { success: false, error: `"${clean}" is already taken by another pilot` };
-        }
         return { success: false, error: `"${clean}" is already taken by another pilot` };
       }
 
@@ -476,7 +372,6 @@ export class LeaderboardService {
 
       await redis.send("HSET", [CONFIG.KEY_USERNAMES, wallet, clean]);
       await redis.send("HSET", [CONFIG.KEY_USERNAMES_REVERSE, lower, wallet]);
-      await redis.send("DEL", [this.reserveKey(clean)]);
 
       console.log(`[LeaderboardService] Updated username for wallet ${wallet} -> "${clean}"`);
       return { success: true };

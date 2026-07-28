@@ -81,6 +81,13 @@ export function createWebSocketHandler(serverGetter: () => AppServer) {
           }
 
           case ClientMessageType.GAME_TICK: {
+            sessionService.processTick(
+              msg.sessionId,
+              Math.max(0, msg.score || 0),
+              Math.max(0, msg.speed || 0),
+              Math.max(0, msg.level || 0),
+              msg.timestamp || Date.now()
+            );
             break;
           }
 
@@ -96,6 +103,27 @@ export function createWebSocketHandler(serverGetter: () => AppServer) {
             }
 
             console.log(`[ScoreSubmit] Wallet: ${wallet}, Score: ${score}, Username: "${username || ""}"`);
+
+            const sessionValidation = sessionService.validateScoreSubmission(
+              msg.sessionId,
+              wallet,
+              score
+            );
+
+            if (!sessionValidation.valid) {
+              console.log(`[ScoreSubmit REJECTED] ${sessionValidation.reason}`);
+              sendBinary(ws, {
+                type: ServerMessageType.SCORE_SUBMITTED,
+                score: 0,
+                rank: 0,
+                valid: false,
+              });
+              sendBinary(ws, {
+                type: ServerMessageType.ERROR,
+                message: sessionValidation.reason ?? "Score rejected",
+              });
+              break;
+            }
 
             const { finalRank, finalScore } = await leaderboardService.submitScore(
               wallet,

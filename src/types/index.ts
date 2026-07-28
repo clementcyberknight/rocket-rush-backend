@@ -6,7 +6,9 @@ export interface ActiveSession {
   username?: string;
   startTime: number;
   lastTickTime: number;
-  lastScore: number;
+  lastTickScore: number;
+  lastTickSpeed: number;
+  lastTickLevel: number;
   tickCount: number;
   flagged: boolean;
 }
