@@ -230,23 +230,23 @@ export class LeaderboardService {
 
     if (wallets.length === 0) return [];
 
+    // Fetch usernames individually (more reliable than HMGET in Bun)
     let usernames: (string | null)[] = [];
     try {
-      const res = (await redis.send("HMGET", [
-        CONFIG.KEY_USERNAMES,
-        ...wallets,
-      ])) as unknown[] | null;
-
-      console.log(`[LeaderboardService] HMGET key=${CONFIG.KEY_USERNAMES} wallets=${wallets.length} res=${JSON.stringify(res)}`);
-
-      usernames = Array.isArray(res)
-        ? res.map(u => {
-            const str = toStr(u).trim();
+      const results = await Promise.all(
+        wallets.map(async (w) => {
+          try {
+            const val = await redis.send("HGET", [CONFIG.KEY_USERNAMES, w]);
+            const str = toStr(val).trim();
             return str.length > 0 ? str : null;
-          })
-        : new Array(wallets.length).fill(null);
+          } catch {
+            return null;
+          }
+        })
+      );
+      usernames = results;
     } catch (error) {
-      console.error("[LeaderboardService] Failed to fetch usernames via HMGET:", error);
+      console.error("[LeaderboardService] Failed to fetch usernames:", error);
       usernames = new Array(wallets.length).fill(null);
     }
 
@@ -378,10 +378,16 @@ export class LeaderboardService {
         }
       }
 
-      await redis.send("HSET", [CONFIG.KEY_USERNAMES, wallet, clean]);
+      const hsetRes = await redis.send("HSET", [CONFIG.KEY_USERNAMES, wallet, clean]);
       await redis.send("HSET", [CONFIG.KEY_USERNAMES_REVERSE, lower, wallet]);
 
-      console.log(`[LeaderboardService] Updated username for wallet ${wallet} -> "${clean}" | key=${CONFIG.KEY_USERNAMES} reverse=${CONFIG.KEY_USERNAMES_REVERSE}`);
+      // Verify the write persisted
+      const verifyVal = toStr(await redis.send("HGET", [CONFIG.KEY_USERNAMES, wallet]));
+      console.log(`[LeaderboardService] Updated username for wallet ${wallet} -> "${clean}" | key=${CONFIG.KEY_USERNAMES} reverse=${CONFIG.KEY_USERNAMES_REVERSE} | HSET returned=${JSON.stringify(hsetRes)} | HGET verify="${verifyVal}"`);
+
+      if (verifyVal !== clean) {
+        console.error(`[LeaderboardService] CRITICAL: HGET verification failed! Expected "${clean}" got "${verifyVal}"`);
+      }
       return { success: true };
     } catch (error) {
       console.error(`[LeaderboardService] Error updating username for wallet ${wallet}:`, error);
