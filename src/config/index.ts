@@ -14,12 +14,5 @@ export const CONFIG = {
     MAX_LENGTH: 16,
     PATTERN: /^[a-zA-Z0-9]([a-zA-Z0-9_-]*[a-zA-Z0-9])?$/,
   },
-  ANTI_CHEAT: {
-    MAX_SCORE_RATE: 2000,
-    MAX_PLAUSIBLE_SCORE_PER_SEC: 1500,
-    MAX_PLAUSIBLE_SCORE_BASE: 5000,
-    MIN_TICK_DELTA_TIME: 0.05,
-    MIN_DELTA_SCORE: -100,
-  },
   WEEK_CHECK_INTERVAL_MS: 60_000,
 } as const;

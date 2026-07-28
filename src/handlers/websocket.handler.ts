@@ -95,28 +95,7 @@ export function createWebSocketHandler(serverGetter: () => AppServer) {
               username = rawWallet.split("@")[0];
             }
 
-            const sessionValidation = sessionService.validateScoreSubmission(
-              msg.sessionId,
-              wallet,
-              score
-            );
-            const valid = sessionValidation.valid;
-
-            console.log(`[ScoreSubmit] Wallet: ${wallet}, Score: ${score}, Username: "${username || ""}", Valid: ${valid}`);
-
-            if (!valid) {
-              sendBinary(ws, {
-                type: ServerMessageType.SCORE_SUBMITTED,
-                score: 0,
-                rank: 0,
-                valid: false,
-              });
-              sendBinary(ws, {
-                type: ServerMessageType.ERROR,
-                message: "Score rejected by anti-cheat validation",
-              });
-              break;
-            }
+            console.log(`[ScoreSubmit] Wallet: ${wallet}, Score: ${score}, Username: "${username || ""}"`);
 
             const { finalRank, finalScore } = await leaderboardService.submitScore(
               wallet,
