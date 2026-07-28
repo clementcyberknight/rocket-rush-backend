@@ -19,8 +19,17 @@ function toNum(val: unknown): number {
   return isNaN(parsed) ? 0 : parsed;
 }
 
+const profanityList: ReadonlySet<string> = new Set([
+  "fuck", "shit", "ass", "bitch", "dick", "cock", "cunt", "piss",
+  "slut", "whore", "bastard", "nigger", "fag", "retard", "twat",
+]);
+
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export class LeaderboardService {
   private currentWeekKey: string;
+  private rateLimitMap = new Map<string, number>();
+  private rateLimitMaxPerSecond = 3;
 
   constructor() {
     this.currentWeekKey = this.getWeekKey();
@@ -42,6 +51,245 @@ export class LeaderboardService {
     return this.currentWeekKey;
   }
 
+  private checkRateLimit(key: string): boolean {
+    const now = Date.now();
+    const windowStart = now - 1000;
+    const last = this.rateLimitMap.get(key);
+    if (last && last > windowStart) {
+      return false;
+    }
+    this.rateLimitMap.set(key, now);
+    return true;
+  }
+
+  private reserveKey(username: string): string {
+    return `rocket-rush:username:reserved:${username.toLowerCase()}`;
+  }
+
+  public validateUsernameFormat(username: string): { valid: boolean; error?: string } {
+    const { MIN_LENGTH, MAX_LENGTH, PATTERN } = CONFIG.USERNAME;
+    if (!username || typeof username !== "string" || username.trim().length === 0) {
+      return { valid: false, error: "Username cannot be empty" };
+    }
+    const clean = username.trim();
+    if (clean.length < MIN_LENGTH) {
+      return { valid: false, error: `Username must be at least ${MIN_LENGTH} characters` };
+    }
+    if (clean.length > MAX_LENGTH) {
+      return { valid: false, error: `Username must be at most ${MAX_LENGTH} characters` };
+    }
+    if (!PATTERN.test(clean)) {
+      return { valid: false, error: "Username can only contain letters, numbers, underscores, and hyphens (must start and end with letter/number)" };
+    }
+    const lower = clean.toLowerCase();
+    for (const bad of profanityList) {
+      if (lower.includes(bad)) {
+        return { valid: false, error: "Username contains inappropriate content" };
+      }
+    }
+    return { valid: true };
+  }
+
+  public async checkUsernameAvailability(
+    username: string,
+    wallet: string
+  ): Promise<{ available: boolean; error?: string }> {
+    if (!this.checkRateLimit(`check:${wallet}`)) {
+      return { available: false, error: "Rate limited. Please wait a moment." };
+    }
+
+    const validation = this.validateUsernameFormat(username);
+    if (!validation.valid) {
+      return { available: false, error: validation.error };
+    }
+
+    const clean = username.trim();
+    const lower = clean.toLowerCase();
+
+    try {
+      const owner = toStr(
+        await redis.send("HGET", [CONFIG.KEY_USERNAMES_REVERSE, lower])
+      );
+
+      if (owner && owner !== wallet) {
+        return { available: false, error: `"${clean}" is already taken` };
+      }
+
+      const reserved = toStr(
+        await redis.send("GET", [this.reserveKey(clean)])
+      );
+      if (reserved && reserved !== wallet) {
+        return { available: false, error: `"${clean}" is currently reserved` };
+      }
+
+      return { available: true };
+    } catch (error) {
+      console.error("[LeaderboardService] Error checking username availability:", error);
+      return { available: false, error: "Server error checking username" };
+    }
+  }
+
+  public async reserveUsername(
+    wallet: string,
+    username: string
+  ): Promise<{ success: boolean; error?: string }> {
+    if (!wallet || typeof wallet !== "string" || wallet === "anonymous") {
+      return { success: false, error: "Invalid wallet" };
+    }
+
+    const availability = await this.checkUsernameAvailability(username, wallet);
+    if (!availability.available) {
+      return { success: false, error: availability.error };
+    }
+
+    const clean = username.trim();
+    const lower = clean.toLowerCase();
+
+    try {
+      await redis.send("SET", [
+        this.reserveKey(clean),
+        wallet,
+        "EX",
+        CONFIG.USERNAME_RESERVATION_TTL.toString(),
+        "NX",
+      ]);
+
+      const previousOwner = toStr(
+        await redis.send("HGET", [CONFIG.KEY_USERNAMES_REVERSE, lower])
+      );
+
+      await redis.send("HSET", [
+        CONFIG.KEY_USERNAMES,
+        wallet,
+        clean,
+      ]);
+      await redis.send("HSET", [
+        CONFIG.KEY_USERNAMES_REVERSE,
+        lower,
+        wallet,
+      ]);
+
+      if (previousOwner && previousOwner !== wallet) {
+        const oldUsername = toStr(
+          await redis.send("HGET", [CONFIG.KEY_USERNAMES, previousOwner])
+        );
+        if (oldUsername.toLowerCase() === lower) {
+          await redis.send("HDEL", [
+            CONFIG.KEY_USERNAMES,
+            previousOwner,
+          ]);
+          await redis.send("HDEL", [
+            CONFIG.KEY_USERNAMES_REVERSE,
+            lower,
+          ]);
+          console.log(`[LeaderboardService] Unlinked username "${clean}" from previous owner ${previousOwner}`);
+        }
+      }
+
+      console.log(`[LeaderboardService] Reserved username "${clean}" for wallet ${wallet}`);
+      return { success: true };
+    } catch (error) {
+      console.error("[LeaderboardService] Error reserving username:", error);
+      return { success: false, error: "Server error reserving username" };
+    }
+  }
+
+  public async mergeGuestScores(
+    fromWallet: string,
+    toWallet: string
+  ): Promise<void> {
+    if (!fromWallet || !toWallet || fromWallet === toWallet) return;
+    if (!fromWallet.startsWith("user_") && !fromWallet.startsWith("guest_")) return;
+    if (!this.checkRateLimit(`merge:${toWallet}`)) return;
+
+    try {
+      const allWeekKeys = await redis.send("KEYS", [
+        `${CONFIG.PREFIX}:*`,
+      ]);
+
+      if (!Array.isArray(allWeekKeys)) return;
+
+      let mergedCount = 0;
+
+      for (const key of allWeekKeys) {
+        const keyStr = toStr(key);
+        if (!keyStr.startsWith(`${CONFIG.PREFIX}:`)) continue;
+
+        const guestScore = toNum(
+          await redis.send("ZSCORE", [keyStr, fromWallet])
+        );
+
+        if (guestScore > 0) {
+          const existing = toNum(
+            await redis.send("ZSCORE", [keyStr, toWallet])
+          );
+
+          if (guestScore > existing) {
+            await redis.send("ZADD", [
+              keyStr,
+              guestScore.toString(),
+              toWallet,
+            ]);
+            mergedCount++;
+          }
+
+          await redis.send("ZREM", [keyStr, fromWallet]);
+        }
+      }
+
+      const guestUsername = toStr(
+        await redis.send("HGET", [CONFIG.KEY_USERNAMES, fromWallet])
+      );
+      if (guestUsername) {
+        const existingUsername = toStr(
+          await redis.send("HGET", [CONFIG.KEY_USERNAMES, toWallet])
+        );
+        if (!existingUsername) {
+          await redis.send("HSET", [
+            CONFIG.KEY_USERNAMES,
+            toWallet,
+            guestUsername,
+          ]);
+          await redis.send("HSET", [
+            CONFIG.KEY_USERNAMES_REVERSE,
+            guestUsername.toLowerCase(),
+            toWallet,
+          ]);
+        }
+        await redis.send("HDEL", [CONFIG.KEY_USERNAMES, fromWallet]);
+      }
+
+      console.log(
+        `[LeaderboardService] Merged ${mergedCount} scores from ${fromWallet} -> ${toWallet}`
+      );
+    } catch (error) {
+      console.error("[LeaderboardService] Error merging guest scores:", error);
+    }
+  }
+
+  public async lookupUuid(wallet: string): Promise<string | null> {
+    if (!wallet || typeof wallet !== "string") return null;
+    if (uuidPattern.test(wallet)) return wallet;
+    try {
+      const uuid = toStr(
+        await redis.send("HGET", [CONFIG.KEY_UUID_INDEX, wallet])
+      );
+      return uuid || null;
+    } catch {
+      return null;
+    }
+  }
+
+  public async bindUuid(wallet: string, uuid: string): Promise<void> {
+    if (!wallet || !uuid || wallet === "anonymous") return;
+    if (!uuidPattern.test(uuid)) return;
+    try {
+      await redis.send("HSET", [CONFIG.KEY_UUID_INDEX, wallet, uuid]);
+    } catch (error) {
+      console.error("[LeaderboardService] Error binding UUID:", error);
+    }
+  }
+
   public async getTopScores(
     limit: number = 20,
     week?: string
@@ -57,7 +305,7 @@ export class LeaderboardService {
       ])) as unknown[] | null;
     } catch (error) {
       console.error(`[LeaderboardService] Error fetching top scores for key ${key}:`, error);
-      throw error;
+      return [];
     }
 
     if (!raw || !Array.isArray(raw) || raw.length === 0) return [];
@@ -141,12 +389,24 @@ export class LeaderboardService {
       existingScore = 0;
     }
 
-    // Only set username if wallet is NOT generic 'anonymous'
     if (wallet !== "anonymous" && username && typeof username === "string" && username.trim().length > 0) {
-      try {
-        await redis.send("HSET", [CONFIG.KEY_USERNAMES, wallet, username.trim()]);
-      } catch (error) {
-        console.error(`[LeaderboardService] Error setting username for wallet ${wallet}:`, error);
+      const existingUsername = toStr(
+        await redis.send("HGET", [CONFIG.KEY_USERNAMES, wallet])
+      );
+      if (!existingUsername) {
+        try {
+          const clean = username.trim();
+          const lower = clean.toLowerCase();
+          const existingOwner = toStr(
+            await redis.send("HGET", [CONFIG.KEY_USERNAMES_REVERSE, lower])
+          );
+          if (!existingOwner || existingOwner === wallet) {
+            await redis.send("HSET", [CONFIG.KEY_USERNAMES, wallet, clean]);
+            await redis.send("HSET", [CONFIG.KEY_USERNAMES_REVERSE, lower, wallet]);
+          }
+        } catch (error) {
+          console.error(`[LeaderboardService] Error setting username for wallet ${wallet}:`, error);
+        }
       }
     }
 
@@ -166,72 +426,65 @@ export class LeaderboardService {
     return { finalRank, finalScore };
   }
 
-  public async updateUsername(wallet: string, username: string): Promise<{ success: boolean; error?: string }> {
-    if (!wallet || typeof wallet !== "string" || wallet === "anonymous" || !username || typeof username !== "string") {
-      return { success: false, error: "Invalid parameters" };
+  public async updateUsername(
+    wallet: string,
+    username: string
+  ): Promise<{ success: boolean; error?: string }> {
+    if (!wallet || typeof wallet !== "string" || wallet === "anonymous") {
+      return { success: false, error: "Invalid wallet" };
     }
+
+    const validation = this.validateUsernameFormat(username);
+    if (!validation.valid) {
+      return { success: false, error: validation.error };
+    }
+
+    if (!this.checkRateLimit(`update:${wallet}`)) {
+      return { success: false, error: "Rate limited. Please wait a moment." };
+    }
+
+    const clean = username.trim();
+    const lower = clean.toLowerCase();
+
     try {
-      const cleanName = username.trim();
-      if (!cleanName) return { success: false, error: "Username cannot be empty" };
+      const existingOwner = toStr(
+        await redis.send("HGET", [CONFIG.KEY_USERNAMES_REVERSE, lower])
+      );
 
-      const lowerName = cleanName.toLowerCase();
+      if (existingOwner && existingOwner !== wallet) {
+        const reserved = toStr(
+          await redis.send("GET", [this.reserveKey(clean)])
+        );
+        if (reserved && reserved !== wallet) {
+          return { success: false, error: `"${clean}" is already taken by another pilot` };
+        }
+        return { success: false, error: `"${clean}" is already taken by another pilot` };
+      }
 
-      const hsetnxResult = await redis.send("HSETNX", [CONFIG.KEY_USERNAME_INDEX, lowerName, wallet]);
-      const isNew = typeof hsetnxResult === "number" ? hsetnxResult === 1 : toNum(hsetnxResult) === 1;
-
-      if (!isNew) {
-        const existingWallet = await redis.send("HGET", [CONFIG.KEY_USERNAME_INDEX, lowerName]);
-        if (toStr(existingWallet).trim() !== wallet) {
-          console.log(`[LeaderboardService] Username "${cleanName}" is already taken by wallet ${toStr(existingWallet).trim()}`);
-          return { success: false, error: "Username already taken" };
+      const currentUsername = toStr(
+        await redis.send("HGET", [CONFIG.KEY_USERNAMES, wallet])
+      );
+      if (currentUsername) {
+        const currentLower = currentUsername.toLowerCase();
+        if (currentLower !== lower) {
+          await redis.send("HDEL", [
+            CONFIG.KEY_USERNAMES_REVERSE,
+            currentLower,
+          ]);
         }
       }
 
-      const oldUsername = await redis.send("HGET", [CONFIG.KEY_USERNAMES, wallet]);
-      const oldUsernameStr = toStr(oldUsername).trim();
+      await redis.send("HSET", [CONFIG.KEY_USERNAMES, wallet, clean]);
+      await redis.send("HSET", [CONFIG.KEY_USERNAMES_REVERSE, lower, wallet]);
+      await redis.send("DEL", [this.reserveKey(clean)]);
 
-      if (oldUsernameStr && oldUsernameStr.toLowerCase() !== lowerName) {
-        await redis.send("HDEL", [CONFIG.KEY_USERNAME_INDEX, oldUsernameStr.toLowerCase()]);
-      }
-      console.log(`[LeaderboardService] Updating username for wallet ${wallet} -> "${cleanName}"`);
-      await redis.send("HSET", [CONFIG.KEY_USERNAMES, wallet, cleanName]);
-
+      console.log(`[LeaderboardService] Updated username for wallet ${wallet} -> "${clean}"`);
       return { success: true };
     } catch (error) {
       console.error(`[LeaderboardService] Error updating username for wallet ${wallet}:`, error);
-      return { success: false, error: "Internal error updating username" };
+      return { success: false, error: "Server error" };
     }
   }
-
-  public async mergeGuestScores(fromWallet: string, toWallet: string): Promise<void> {
-    if (!fromWallet || !toWallet || fromWallet === toWallet) return;
-
-    try {
-      const weekKey = this.currentWeekKey;
-
-      const guestScoreRes = await redis.send("ZSCORE", [weekKey, fromWallet]);
-      const guestScore = toNum(guestScoreRes);
-
-      if (guestScore > 0) {
-        const walletScoreRes = await redis.send("ZSCORE", [weekKey, toWallet]);
-        const walletScore = toNum(walletScoreRes);
-        const finalScore = Math.max(guestScore, walletScore);
-        await redis.send("ZADD", [weekKey, finalScore.toString(), toWallet]);
-        console.log(`[LeaderboardService] Merged score ${guestScore} from ${fromWallet} -> ${toWallet} (final: ${finalScore})`);
-      }
-
-      await redis.send("ZREM", [weekKey, fromWallet]);
-
-      const guestLowerName = await redis.send("HGET", [CONFIG.KEY_USERNAMES, fromWallet]);
-      const guestName = toStr(guestLowerName).trim();
-
-      await redis.send("HDEL", [CONFIG.KEY_USERNAMES, fromWallet]);
-
-      if (guestName) {
-        await redis.send("HDEL", [CONFIG.KEY_USERNAME_INDEX, guestName.toLowerCase()]);
-      }
-    } catch (error) {
-      console.error(`[LeaderboardService] Error merging guest scores from ${fromWallet} to ${toWallet}:`, error);
     }
   }
 

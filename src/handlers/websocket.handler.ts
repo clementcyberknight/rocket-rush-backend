@@ -95,7 +95,28 @@ export function createWebSocketHandler(serverGetter: () => AppServer) {
               username = rawWallet.split("@")[0];
             }
 
-            console.log(`[ScoreSubmit] Wallet: ${wallet}, Score: ${score}, Username: "${username || ""}"`);
+            const sessionValidation = sessionService.validateScoreSubmission(
+              msg.sessionId,
+              wallet,
+              score
+            );
+            const valid = sessionValidation.valid;
+
+            console.log(`[ScoreSubmit] Wallet: ${wallet}, Score: ${score}, Username: "${username || ""}", Valid: ${valid}`);
+
+            if (!valid) {
+              sendBinary(ws, {
+                type: ServerMessageType.SCORE_SUBMITTED,
+                score: 0,
+                rank: 0,
+                valid: false,
+              });
+              sendBinary(ws, {
+                type: ServerMessageType.ERROR,
+                message: "Score rejected by anti-cheat validation",
+              });
+              break;
+            }
 
             const { finalRank, finalScore } = await leaderboardService.submitScore(
               wallet,
@@ -105,7 +126,6 @@ export function createWebSocketHandler(serverGetter: () => AppServer) {
 
             console.log(`[ScoreSubmit SUCCESS] Wallet: ${wallet}, Submitted: ${score}, FinalScore: ${finalScore}, Rank: #${finalRank}`);
 
-            // 1. Send submission result to submitting client
             sendBinary(ws, {
               type: ServerMessageType.SCORE_SUBMITTED,
               score: finalScore,
@@ -113,10 +133,8 @@ export function createWebSocketHandler(serverGetter: () => AppServer) {
               valid: true,
             });
 
-            // 2. Fetch updated top 20 rankings
             const freshLeaderboard = await leaderboardService.getTopScores(20);
 
-            // 3. Send fresh leaderboard directly to the submitting client & broadcast to all
             sendBinary(ws, {
               type: ServerMessageType.LEADERBOARD,
               week: leaderboardService.getCurrentWeek(),
@@ -147,13 +165,12 @@ export function createWebSocketHandler(serverGetter: () => AppServer) {
           case ClientMessageType.UPDATE_USERNAME: {
             if (!msg.wallet || !msg.username) break;
             console.log(`[UsernameUpdate] Wallet ${msg.wallet} updating username to "${msg.username}"`);
-
             const result = await leaderboardService.updateUsername(msg.wallet, msg.username);
 
             sendBinary(ws, {
               type: ServerMessageType.USERNAME_UPDATED,
               success: result.success,
-              message: result.success ? "Username updated successfully" : (result.error || "Unknown error"),
+              message: result.success ? "Callsign updated!" : (result.error || "Update failed"),
             });
 
             if (result.success) {
@@ -174,7 +191,7 @@ export function createWebSocketHandler(serverGetter: () => AppServer) {
 
           case ClientMessageType.MERGE_GUEST: {
             if (!msg.fromWallet || !msg.toWallet) break;
-            console.log(`[MergeGuest] Merging scores from ${msg.fromWallet} -> ${msg.toWallet}`);
+            console.log(`[MergeGuest] Merging ${msg.fromWallet} -> ${msg.toWallet}`);
             await leaderboardService.mergeGuestScores(msg.fromWallet, msg.toWallet);
 
             const freshLeaderboard = await leaderboardService.getTopScores(20);
@@ -187,6 +204,20 @@ export function createWebSocketHandler(serverGetter: () => AppServer) {
               type: ServerMessageType.LEADERBOARD,
               week: leaderboardService.getCurrentWeek(),
               entries: freshLeaderboard,
+            });
+            break;
+          }
+
+          case ClientMessageType.CHECK_USERNAME: {
+            if (!msg.username || !msg.wallet) break;
+            const result = await leaderboardService.checkUsernameAvailability(
+              msg.username,
+              msg.wallet
+            );
+            sendBinary(ws, {
+              type: ServerMessageType.USERNAME_CHECKED,
+              available: result.available,
+              error: result.error,
             });
             break;
           }

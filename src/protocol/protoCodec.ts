@@ -159,6 +159,7 @@ export enum ClientMessageType {
   GET_LEADERBOARD = 4,
   UPDATE_USERNAME = 5,
   MERGE_GUEST = 6,
+  CHECK_USERNAME = 7,
 }
 
 export type ClientMessagePayload =
@@ -167,7 +168,8 @@ export type ClientMessagePayload =
   | { type: ClientMessageType.SUBMIT_SCORE; sessionId: string; wallet: string; score: number; username?: string }
   | { type: ClientMessageType.GET_LEADERBOARD; limit?: number; week?: string }
   | { type: ClientMessageType.UPDATE_USERNAME; wallet: string; username: string }
-  | { type: ClientMessageType.MERGE_GUEST; fromWallet: string; toWallet: string };
+  | { type: ClientMessageType.MERGE_GUEST; fromWallet: string; toWallet: string }
+  | { type: ClientMessageType.CHECK_USERNAME; username: string; wallet: string };
 
 export enum ServerMessageType {
   SESSION_STARTED = 1,
@@ -175,6 +177,7 @@ export enum ServerMessageType {
   SCORE_SUBMITTED = 3,
   ERROR = 4,
   USERNAME_UPDATED = 5,
+  USERNAME_CHECKED = 6,
 }
 
 export type LeaderboardEntry = {
@@ -189,7 +192,8 @@ export type ServerMessagePayload =
   | { type: ServerMessageType.LEADERBOARD; week: string; entries: LeaderboardEntry[] }
   | { type: ServerMessageType.SCORE_SUBMITTED; score: number; rank: number; valid: boolean }
   | { type: ServerMessageType.ERROR; message: string }
-  | { type: ServerMessageType.USERNAME_UPDATED; success: boolean; message: string };
+  | { type: ServerMessageType.USERNAME_UPDATED; success: boolean; message: string }
+  | { type: ServerMessageType.USERNAME_CHECKED; available: boolean; error?: string };
 
 export function encodeClientMessage(msg: ClientMessagePayload): Uint8Array {
   const outer = new BinaryWriter();
@@ -219,6 +223,9 @@ export function encodeClientMessage(msg: ClientMessagePayload): Uint8Array {
   } else if (msg.type === ClientMessageType.MERGE_GUEST) {
     inner.writeString(1, msg.fromWallet);
     inner.writeString(2, msg.toWallet);
+  } else if (msg.type === ClientMessageType.CHECK_USERNAME) {
+    inner.writeString(1, msg.username);
+    inner.writeString(2, msg.wallet);
   }
 
   outer.writeBytes(2, inner.finish());
@@ -309,6 +316,16 @@ export function decodeClientMessage(buffer: ArrayBuffer | Uint8Array): ClientMes
         else inner.skip(tag.wireType);
       }
       return { type, fromWallet, toWallet };
+    } else if (type === ClientMessageType.CHECK_USERNAME) {
+      let username = "", wallet = "";
+      while (inner.hasMore()) {
+        const tag = inner.readTag();
+        if (!tag) break;
+        if (tag.fieldNumber === 1 && tag.wireType === 2) username = inner.readString();
+        else if (tag.fieldNumber === 2 && tag.wireType === 2) wallet = inner.readString();
+        else inner.skip(tag.wireType);
+      }
+      return { type, username, wallet };
     }
     return null;
   } catch {
@@ -342,6 +359,9 @@ export function encodeServerMessage(msg: ServerMessagePayload): Uint8Array {
   } else if (msg.type === ServerMessageType.USERNAME_UPDATED) {
     inner.writeBool(1, msg.success);
     inner.writeString(2, msg.message);
+  } else if (msg.type === ServerMessageType.USERNAME_CHECKED) {
+    inner.writeBool(1, msg.available);
+    if (msg.error) inner.writeString(2, msg.error);
   }
 
   outer.writeBytes(2, inner.finish());
@@ -429,6 +449,16 @@ export function decodeServerMessage(buffer: ArrayBuffer | Uint8Array): ServerMes
         else inner.skip(tag.wireType);
       }
       return { type, success, message };
+    } else if (type === ServerMessageType.USERNAME_CHECKED) {
+      let available = false, error: string | undefined;
+      while (inner.hasMore()) {
+        const tag = inner.readTag();
+        if (!tag) break;
+        if (tag.fieldNumber === 1 && tag.wireType === 0) available = inner.readVarint() === 1;
+        else if (tag.fieldNumber === 2 && tag.wireType === 2) error = inner.readString();
+        else inner.skip(tag.wireType);
+      }
+      return { type, available, error };
     }
     return null;
   } catch {
