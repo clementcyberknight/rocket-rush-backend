@@ -98,9 +98,15 @@ export class RoomService {
 
   async createRoom(ws: AppWebSocket): Promise<{ code: string; seed: number } | null> {
     const uid = ws.data.uid
-    if (!uid) return null
+    if (!uid) {
+      console.error("[RoomService] createRoom: no uid on WebSocket data")
+      return null
+    }
 
-    if (uidToRoom.has(uid)) this.leaveRoom(ws)
+    if (uidToRoom.has(uid)) {
+      console.log(`[RoomService] createRoom: uid=${uid} already in room, leaving first`)
+      this.leaveRoom(ws)
+    }
 
     let code = generateCode()
     while (rooms.has(code)) code = generateCode()
@@ -132,6 +138,7 @@ export class RoomService {
 
     rooms.set(code, room)
     uidToRoom.set(uid, code)
+    console.log(`[RoomService] Room ${code} created by uid=${uid} seed=${seed}`)
 
     try {
       const redis = getRedis()
@@ -161,16 +168,28 @@ export class RoomService {
     players?: RoomPlayerEntry[]
   }> {
     const uid = ws.data.uid
-    if (!uid) return { success: false, error: "Not authenticated" }
+    if (!uid) {
+      console.error("[RoomService] joinRoom: no uid on WebSocket data")
+      return { success: false, error: "Not authenticated" }
+    }
 
     if (uidToRoom.has(uid)) this.leaveRoom(ws)
 
     const room = rooms.get(code.toUpperCase())
-    if (!room) return { success: false, error: "Room not found or expired" }
+    if (!room) {
+      console.log(`[RoomService] joinRoom: room ${code} not found`)
+      return { success: false, error: "Room not found or expired" }
+    }
 
-    if (room.status !== "lobby") return { success: false, error: "Game already in progress" }
+    if (room.status !== "lobby") {
+      console.log(`[RoomService] joinRoom: room ${code} not in lobby, status=${room.status}`)
+      return { success: false, error: "Game already in progress" }
+    }
 
-    if (room.players.size >= ROOM_MAX_PLAYERS) return { success: false, error: "Room is full (max 10 players)" }
+    if (room.players.size >= ROOM_MAX_PLAYERS) {
+      console.log(`[RoomService] joinRoom: room ${code} full (${room.players.size})`)
+      return { success: false, error: "Room is full (max 10 players)" }
+    }
 
     const username = await usernameService.getUsername(uid)
     const player: RoomPlayer = {
