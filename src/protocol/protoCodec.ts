@@ -71,7 +71,6 @@ export class BinaryWriter {
   }
 
   writeBool(fieldNumber: number, val: boolean) {
-    if (!val) return;
     this.writeTag(fieldNumber, 0);
     this.writeVarint(val ? 1 : 0);
   }
@@ -175,8 +174,8 @@ export type ClientMessagePayload =
   | { type: ClientMessageType.UPDATE_USERNAME; wallet: string; username: string }
   | { type: ClientMessageType.MERGE_GUEST; fromWallet: string; toWallet: string }
   | { type: ClientMessageType.CHECK_USERNAME; username: string; wallet: string }
-  | { type: ClientMessageType.CREATE_ROOM }
-  | { type: ClientMessageType.JOIN_ROOM; code: string }
+  | { type: ClientMessageType.CREATE_ROOM; wallet?: string; username?: string }
+  | { type: ClientMessageType.JOIN_ROOM; code: string; wallet?: string; username?: string }
   | { type: ClientMessageType.LEAVE_ROOM }
   | { type: ClientMessageType.START_ROOM }
   | { type: ClientMessageType.SPECTATE_TARGET; uid: string };
@@ -384,16 +383,26 @@ export function decodeClientMessage(buffer: ArrayBuffer | Uint8Array): ClientMes
       }
       return { type, username, wallet };
     } else if (type === ClientMessageType.CREATE_ROOM) {
-      return { type };
+      let wallet: string | undefined, username: string | undefined;
+      while (inner.hasMore()) {
+        const tag = inner.readTag();
+        if (!tag) break;
+        if (tag.fieldNumber === 1 && tag.wireType === 2) wallet = inner.readString();
+        else if (tag.fieldNumber === 2 && tag.wireType === 2) username = inner.readString();
+        else inner.skip(tag.wireType);
+      }
+      return { type, wallet, username };
     } else if (type === ClientMessageType.JOIN_ROOM) {
-      let code = "";
+      let code = "", wallet: string | undefined, username: string | undefined;
       while (inner.hasMore()) {
         const tag = inner.readTag();
         if (!tag) break;
         if (tag.fieldNumber === 1 && tag.wireType === 2) code = inner.readString();
+        else if (tag.fieldNumber === 2 && tag.wireType === 2) wallet = inner.readString();
+        else if (tag.fieldNumber === 3 && tag.wireType === 2) username = inner.readString();
         else inner.skip(tag.wireType);
       }
-      return { type, code };
+      return { type, code, wallet, username };
     } else if (type === ClientMessageType.LEAVE_ROOM) {
       return { type };
     } else if (type === ClientMessageType.START_ROOM) {

@@ -293,7 +293,18 @@ export function createWebSocketHandler(serverGetter: () => AppServer) {
           }
 
           case ClientMessageType.CREATE_ROOM: {
-            if (!ws.data.uid) {
+            const rawIdentity = (msg.wallet || "").trim()
+            if (rawIdentity) {
+              const identity = rawIdentity.includes("@") ? rawIdentity.toLowerCase() : rawIdentity
+              const user = await userService.resolveUser(identity)
+              ws.data.uid = user.uid
+              if (msg.username && msg.username.trim().length > 0 && !user.username) {
+                const unameValid = userService.validateUsernameFormat(msg.username)
+                if (unameValid.valid) {
+                  await usernameService.setUsername(user.uid, msg.username.trim())
+                }
+              }
+            } else if (!ws.data.uid) {
               const user = await userService.resolveUser(generateRushId())
               ws.data.uid = user.uid
             }
@@ -318,7 +329,18 @@ export function createWebSocketHandler(serverGetter: () => AppServer) {
 
           case ClientMessageType.JOIN_ROOM: {
             if (!msg.code) break
-            if (!ws.data.uid) {
+            const rawIdentity = (msg.wallet || "").trim()
+            if (rawIdentity) {
+              const identity = rawIdentity.includes("@") ? rawIdentity.toLowerCase() : rawIdentity
+              const user = await userService.resolveUser(identity)
+              ws.data.uid = user.uid
+              if (msg.username && msg.username.trim().length > 0 && !user.username) {
+                const unameValid = userService.validateUsernameFormat(msg.username)
+                if (unameValid.valid) {
+                  await usernameService.setUsername(user.uid, msg.username.trim())
+                }
+              }
+            } else if (!ws.data.uid) {
               const user = await userService.resolveUser(generateRushId())
               ws.data.uid = user.uid
             }

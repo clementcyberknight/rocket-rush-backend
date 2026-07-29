@@ -9,6 +9,7 @@ import {
   type RoomRankingEntry,
 } from "../protocol/protoCodec"
 import { usernameService } from "./username.service"
+import { userService } from "./user.service"
 import type { AppServer, AppWebSocket } from "../types"
 
 const ROOM_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -100,7 +101,7 @@ export class RoomService {
     return this.server
   }
 
-  async createRoom(ws: AppWebSocket): Promise<{ code: string; seed: number } | null> {
+  async createRoom(ws: AppWebSocket, preferredUsername?: string): Promise<{ code: string; seed: number } | null> {
     const uid = ws.data.uid
     if (!uid) { console.error("[RoomService] createRoom: no uid"); return null }
 
@@ -110,7 +111,11 @@ export class RoomService {
     while (rooms.has(code)) code = generateCode()
 
     const seed = (Math.random() * 0xffffffff) >>> 0
-    const username = await usernameService.getUsername(uid)
+    let username = await usernameService.getUsername(uid)
+    if (!username) {
+      const u = await userService.getUser(uid)
+      username = u?.username || preferredUsername || null
+    }
 
     const room: InMemoryRoom = {
       code, seed, hostUid: uid, status: "lobby",
@@ -137,11 +142,11 @@ export class RoomService {
     } catch (err) { console.error("[RoomService] Redis createRoom:", err) }
 
     ws.subscribe(`room:${code}`)
-    console.log(`[RoomService] Room ${code} created by uid=${uid} seed=${seed}`)
+    console.log(`[RoomService] Room ${code} created by uid=${uid} username=${username} seed=${seed}`)
     return { code, seed }
   }
 
-  async joinRoom(ws: AppWebSocket, code: string): Promise<{
+  async joinRoom(ws: AppWebSocket, code: string, preferredUsername?: string): Promise<{
     success: boolean; error?: string; code?: string; seed?: number; players?: RoomPlayerEntry[]
   }> {
     const uid = ws.data.uid
@@ -153,7 +158,12 @@ export class RoomService {
     if (room.status !== "lobby") return { success: false, error: "Game already in progress" }
     if (room.players.size >= ROOM_MAX_PLAYERS) return { success: false, error: "Room is full (max 10)" }
 
-    const username = await usernameService.getUsername(uid)
+    let username = await usernameService.getUsername(uid)
+    if (!username) {
+      const u = await userService.getUser(uid)
+      username = u?.username || preferredUsername || null
+    }
+
     const player: InMemoryPlayer = {
       ws, uid, username, isHost: false, alive: true,
       x: 0, y: 0, z: 0, score: 0, level: 0
@@ -179,7 +189,7 @@ export class RoomService {
       if (p.uid !== uid) { try { p.ws.send(joinedBytes) } catch {} }
     }
 
-    console.log(`[RoomService] uid=${uid} joined room ${code}`)
+    console.log(`[RoomService] uid=${uid} username=${username} joined room ${code}`)
     return { success: true, code, seed: room.seed, players }
   }
 
@@ -305,8 +315,10 @@ export class RoomService {
     const server = this.getServer()
     server.publish(`room:${code}`, encodeServerMessage({ type: ServerMessageType.ROOM_PLAYER_DIED, uid }))
 
-    const allDead = Array.from(room.players.values()).every(p => !p.alive)
-    if (allDead) {
+    const aliveCount = Array.from(room.players.values()).filter(p => p.alive).length
+    const totalPlayers = room.players.size
+
+    if (aliveCount === 0 || (totalPlayers > 1 && aliveCount <= 1)) {
       room.status = "finished"
       const sorted = Array.from(room.players.values()).sort((a, b) => b.score - a.score)
       const rankings: RoomRankingEntry[] = sorted.map((p, i) => ({
