@@ -228,9 +228,29 @@ export class RoomService {
     if (room.hostUid !== uid) return false
     if (room.players.size < 1) return false
 
+    // Generate new random seed for every new game round
+    room.seed = (Math.random() * 0xffffffff) >>> 0
     room.status = "countdown"
-    room.players.forEach(p => { p.alive = true })
+    room.players.forEach(p => {
+      p.alive = true
+      p.score = 0
+      p.x = 0; p.y = 0; p.z = 0
+    })
+
+    try {
+      const redis = getRedis()
+      await redis.del(Keys.roomPositions(code))
+    } catch {}
+
     const server = this.getServer()
+
+    const startInfoBytes = encodeServerMessage({
+      type: ServerMessageType.ROOM_JOINED,
+      code,
+      seed: room.seed,
+      players: Array.from(room.players.values()).map(p => ({ uid: p.uid, username: p.username, isHost: p.isHost }))
+    })
+    server.publish(`room:${code}`, startInfoBytes)
 
     for (let sec = 3; sec >= 1; sec--) {
       const bytes = encodeServerMessage({ type: ServerMessageType.ROOM_COUNTDOWN, seconds: sec })
@@ -240,7 +260,7 @@ export class RoomService {
 
     room.status = "playing"
     try {
-      await getRedis().hset(Keys.room(code), { status: "playing" })
+      await getRedis().hset(Keys.room(code), { status: "playing", seed: room.seed.toString() })
     } catch {}
     server.publish(`room:${code}`, encodeServerMessage({ type: ServerMessageType.ROOM_STARTED }))
 
