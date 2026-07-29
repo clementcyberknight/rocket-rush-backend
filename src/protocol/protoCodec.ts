@@ -300,9 +300,9 @@ export function decodeClientMessage(buffer: ArrayBuffer | Uint8Array): ClientMes
       else reader.skip(tag.wireType);
     }
 
-    if (!type || !payloadBytes) return null;
+    if (!type) return null;
 
-    const inner = new BinaryReader(payloadBytes);
+    const inner = new BinaryReader(payloadBytes || new Uint8Array(0));
 
     if (type === ClientMessageType.START_SESSION) {
       let wallet = "";
@@ -513,9 +513,9 @@ export function decodeServerMessage(buffer: ArrayBuffer | Uint8Array): ServerMes
       else reader.skip(tag.wireType);
     }
 
-    if (!type || !payloadBytes) return null;
+    if (!type) return null;
 
-    const inner = new BinaryReader(payloadBytes);
+    const inner = new BinaryReader(payloadBytes || new Uint8Array(0));
 
     if (type === ServerMessageType.SESSION_STARTED) {
       let sessionId = "";
