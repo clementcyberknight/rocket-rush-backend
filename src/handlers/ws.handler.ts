@@ -11,6 +11,7 @@ import { userService, generateRushId } from "../services/user.service"
 import { usernameService } from "../services/username.service"
 import { leaderboardService } from "../services/leaderboard.service"
 import { sessionService } from "../services/session.service"
+import { roomService } from "../services/room.service"
 
 export function sendBinary(ws: AppWebSocket, msg: ServerMessagePayload): void {
   const bytes = encodeServerMessage(msg)
@@ -118,6 +119,9 @@ export function createWebSocketHandler(serverGetter: () => AppServer) {
               msg.y || 0,
               msg.z || 0
             )
+            if (ws.data.uid) {
+              roomService.updatePosition(ws.data.uid, msg.x || 0, msg.y || 0, msg.z || 0, msg.score || 0, msg.level || 0)
+            }
             break
           }
 
@@ -192,6 +196,7 @@ export function createWebSocketHandler(serverGetter: () => AppServer) {
             }
 
             await sessionService.endSession(msg.sessionId || "")
+            roomService.playerDied(ws)
             break
           }
 
@@ -284,6 +289,71 @@ export function createWebSocketHandler(serverGetter: () => AppServer) {
               available: result.available,
               error: result.error,
             })
+            break
+          }
+
+          case ClientMessageType.CREATE_ROOM: {
+            if (!ws.data.uid) {
+              const user = await userService.resolveUser(generateRushId())
+              ws.data.uid = user.uid
+            }
+            console.log(`[Room] CREATE_ROOM uid=${ws.data.uid}`)
+            const result = await roomService.createRoom(ws)
+            if (result) {
+              console.log(`[Room] Created room ${result.code} seed=${result.seed} host=${ws.data.uid}`)
+              sendBinary(ws, {
+                type: ServerMessageType.ROOM_CREATED,
+                code: result.code,
+                seed: result.seed,
+              })
+            } else {
+              console.log(`[Room] CREATE_ROOM failed for uid=${ws.data.uid}`)
+              sendBinary(ws, {
+                type: ServerMessageType.ROOM_ERROR,
+                message: "Failed to create room",
+              })
+            }
+            break
+          }
+
+          case ClientMessageType.JOIN_ROOM: {
+            if (!msg.code) break
+            if (!ws.data.uid) {
+              const user = await userService.resolveUser(generateRushId())
+              ws.data.uid = user.uid
+            }
+            console.log(`[Room] JOIN_ROOM code=${msg.code} uid=${ws.data.uid}`)
+            const result = await roomService.joinRoom(ws, msg.code)
+            if (result.success) {
+              console.log(`[Room] JOINED room ${result.code} uid=${ws.data.uid}`)
+              sendBinary(ws, {
+                type: ServerMessageType.ROOM_JOINED,
+                code: result.code!,
+                seed: result.seed!,
+                players: result.players!,
+              })
+            } else {
+              sendBinary(ws, {
+                type: ServerMessageType.ROOM_ERROR,
+                message: result.error || "Failed to join room",
+              })
+            }
+            break
+          }
+
+          case ClientMessageType.LEAVE_ROOM: {
+            roomService.leaveRoom(ws)
+            break
+          }
+
+          case ClientMessageType.START_ROOM: {
+            const ok = await roomService.startRoom(ws)
+            if (!ok) {
+              sendBinary(ws, {
+                type: ServerMessageType.ROOM_ERROR,
+                message: "Only the room host can start the game",
+              })
+            }
             break
           }
         }

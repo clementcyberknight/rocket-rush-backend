@@ -3,6 +3,7 @@ import type { AppServer, WebSocketData } from "./types"
 import { handleHttpRequest } from "./handlers/http.handler"
 import { createWebSocketHandler, broadcastTopLeaderboard } from "./handlers/ws.handler"
 import { leaderboardService } from "./services/leaderboard.service"
+import { roomService } from "./services/room.service"
 
 let server: AppServer
 
@@ -15,6 +16,8 @@ export function startServer(): AppServer {
     websocket: createWebSocketHandler(() => server),
     idleTimeout: 120,
   })
+
+  roomService.setServer(server)
 
   setInterval(() => {
     const keyChanged = leaderboardService.checkWeekChange()
