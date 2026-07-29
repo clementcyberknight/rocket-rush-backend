@@ -160,6 +160,11 @@ export enum ClientMessageType {
   UPDATE_USERNAME = 5,
   MERGE_GUEST = 6,
   CHECK_USERNAME = 7,
+  CREATE_ROOM = 8,
+  JOIN_ROOM = 9,
+  LEAVE_ROOM = 10,
+  START_ROOM = 11,
+  SPECTATE_TARGET = 12,
 }
 
 export type ClientMessagePayload =
@@ -169,7 +174,12 @@ export type ClientMessagePayload =
   | { type: ClientMessageType.GET_LEADERBOARD; limit?: number; week?: string }
   | { type: ClientMessageType.UPDATE_USERNAME; wallet: string; username: string }
   | { type: ClientMessageType.MERGE_GUEST; fromWallet: string; toWallet: string }
-  | { type: ClientMessageType.CHECK_USERNAME; username: string; wallet: string };
+  | { type: ClientMessageType.CHECK_USERNAME; username: string; wallet: string }
+  | { type: ClientMessageType.CREATE_ROOM }
+  | { type: ClientMessageType.JOIN_ROOM; code: string }
+  | { type: ClientMessageType.LEAVE_ROOM }
+  | { type: ClientMessageType.START_ROOM }
+  | { type: ClientMessageType.SPECTATE_TARGET; uid: string };
 
 export enum ServerMessageType {
   SESSION_STARTED = 1,
@@ -178,6 +188,16 @@ export enum ServerMessageType {
   ERROR = 4,
   USERNAME_UPDATED = 5,
   USERNAME_CHECKED = 6,
+  ROOM_CREATED = 7,
+  ROOM_JOINED = 8,
+  ROOM_PLAYER_JOINED = 9,
+  ROOM_PLAYER_LEFT = 10,
+  ROOM_PLAYERS = 11,
+  ROOM_COUNTDOWN = 12,
+  ROOM_STARTED = 13,
+  ROOM_PLAYER_DIED = 14,
+  ROOM_GAME_OVER = 15,
+  ROOM_ERROR = 16,
 }
 
 export type LeaderboardEntry = {
@@ -193,7 +213,41 @@ export type ServerMessagePayload =
   | { type: ServerMessageType.SCORE_SUBMITTED; score: number; rank: number; valid: boolean }
   | { type: ServerMessageType.ERROR; message: string }
   | { type: ServerMessageType.USERNAME_UPDATED; success: boolean; message: string; username?: string }
-  | { type: ServerMessageType.USERNAME_CHECKED; available: boolean; error?: string };
+  | { type: ServerMessageType.USERNAME_CHECKED; available: boolean; error?: string }
+  | { type: ServerMessageType.ROOM_CREATED; code: string; seed: number }
+  | { type: ServerMessageType.ROOM_JOINED; code: string; seed: number; players: RoomPlayerEntry[] }
+  | { type: ServerMessageType.ROOM_PLAYER_JOINED; uid: string; username: string | null }
+  | { type: ServerMessageType.ROOM_PLAYER_LEFT; uid: string }
+  | { type: ServerMessageType.ROOM_PLAYERS; players: RoomPlayerState[] }
+  | { type: ServerMessageType.ROOM_COUNTDOWN; seconds: number }
+  | { type: ServerMessageType.ROOM_STARTED }
+  | { type: ServerMessageType.ROOM_PLAYER_DIED; uid: string }
+  | { type: ServerMessageType.ROOM_GAME_OVER; rankings: RoomRankingEntry[] }
+  | { type: ServerMessageType.ROOM_ERROR; message: string };
+
+export type RoomPlayerEntry = {
+  uid: string
+  username: string | null
+  isHost: boolean
+}
+
+export type RoomPlayerState = {
+  uid: string
+  username: string | null
+  x: number
+  y: number
+  z: number
+  score: number
+  alive: boolean
+  level: number
+}
+
+export type RoomRankingEntry = {
+  uid: string
+  username: string | null
+  score: number
+  rank: number
+}
 
 export function encodeClientMessage(msg: ClientMessagePayload): Uint8Array {
   const outer = new BinaryWriter();
@@ -329,6 +383,30 @@ export function decodeClientMessage(buffer: ArrayBuffer | Uint8Array): ClientMes
         else inner.skip(tag.wireType);
       }
       return { type, username, wallet };
+    } else if (type === ClientMessageType.CREATE_ROOM) {
+      return { type };
+    } else if (type === ClientMessageType.JOIN_ROOM) {
+      let code = "";
+      while (inner.hasMore()) {
+        const tag = inner.readTag();
+        if (!tag) break;
+        if (tag.fieldNumber === 1 && tag.wireType === 2) code = inner.readString();
+        else inner.skip(tag.wireType);
+      }
+      return { type, code };
+    } else if (type === ClientMessageType.LEAVE_ROOM) {
+      return { type };
+    } else if (type === ClientMessageType.START_ROOM) {
+      return { type };
+    } else if (type === ClientMessageType.SPECTATE_TARGET) {
+      let uid = "";
+      while (inner.hasMore()) {
+        const tag = inner.readTag();
+        if (!tag) break;
+        if (tag.fieldNumber === 1 && tag.wireType === 2) uid = inner.readString();
+        else inner.skip(tag.wireType);
+      }
+      return { type, uid };
     }
     return null;
   } catch {
@@ -368,6 +446,53 @@ export function encodeServerMessage(msg: ServerMessagePayload): Uint8Array {
   } else if (msg.type === ServerMessageType.USERNAME_CHECKED) {
     inner.writeBool(1, msg.available);
     if (msg.error) inner.writeString(2, msg.error);
+  } else if (msg.type === ServerMessageType.ROOM_CREATED) {
+    inner.writeString(1, msg.code);
+    inner.writeUint32(2, msg.seed);
+  } else if (msg.type === ServerMessageType.ROOM_JOINED) {
+    inner.writeString(1, msg.code);
+    inner.writeUint32(2, msg.seed);
+    for (const p of msg.players) {
+      const item = new BinaryWriter();
+      item.writeString(1, p.uid);
+      if (p.username) item.writeString(2, p.username);
+      item.writeBool(3, p.isHost);
+      inner.writeBytes(3, item.finish());
+    }
+  } else if (msg.type === ServerMessageType.ROOM_PLAYER_JOINED) {
+    inner.writeString(1, msg.uid);
+    if (msg.username) inner.writeString(2, msg.username);
+  } else if (msg.type === ServerMessageType.ROOM_PLAYER_LEFT) {
+    inner.writeString(1, msg.uid);
+  } else if (msg.type === ServerMessageType.ROOM_PLAYERS) {
+    for (const p of msg.players) {
+      const item = new BinaryWriter();
+      item.writeString(1, p.uid);
+      if (p.username) item.writeString(2, p.username);
+      item.writeFloat(3, p.x);
+      item.writeFloat(4, p.y);
+      item.writeDouble(5, p.z);
+      item.writeDouble(6, p.score);
+      item.writeBool(7, p.alive);
+      item.writeUint32(8, p.level);
+      inner.writeBytes(1, item.finish());
+    }
+  } else if (msg.type === ServerMessageType.ROOM_COUNTDOWN) {
+    inner.writeUint32(1, msg.seconds);
+  } else if (msg.type === ServerMessageType.ROOM_STARTED) {
+  } else if (msg.type === ServerMessageType.ROOM_PLAYER_DIED) {
+    inner.writeString(1, msg.uid);
+  } else if (msg.type === ServerMessageType.ROOM_GAME_OVER) {
+    for (const r of msg.rankings) {
+      const item = new BinaryWriter();
+      item.writeString(1, r.uid);
+      if (r.username) item.writeString(2, r.username);
+      item.writeDouble(3, r.score);
+      item.writeUint32(4, r.rank);
+      inner.writeBytes(1, item.finish());
+    }
+  } else if (msg.type === ServerMessageType.ROOM_ERROR) {
+    inner.writeString(1, msg.message);
   }
 
   outer.writeBytes(2, inner.finish());
