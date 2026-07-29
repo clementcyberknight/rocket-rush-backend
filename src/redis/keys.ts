@@ -24,6 +24,7 @@ export const Keys = {
 
   room: (code: string) => `${P}room:${code}`,
   roomPlayers: (code: string) => `${P}room:${code}:players`,
+  roomPositions: (code: string) => `${P}room:${code}:pos`,
 
   rateLimit: (action: string, id: string) => `${P}rl:${action}:${id}`,
 } as const
