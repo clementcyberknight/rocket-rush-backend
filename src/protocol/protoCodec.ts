@@ -165,6 +165,7 @@ export enum ClientMessageType {
   START_ROOM = 11,
   SPECTATE_TARGET = 12,
   PLAYER_MOVE = 13,
+  RESET_ROOM_LOBBY = 14,
 }
 
 export type ClientMessagePayload =
@@ -180,7 +181,8 @@ export type ClientMessagePayload =
   | { type: ClientMessageType.LEAVE_ROOM }
   | { type: ClientMessageType.START_ROOM }
   | { type: ClientMessageType.SPECTATE_TARGET; uid: string }
-  | { type: ClientMessageType.PLAYER_MOVE; x: number; y: number; z: number; speed: number; score: number; level: number };
+  | { type: ClientMessageType.PLAYER_MOVE; x: number; y: number; z: number; speed: number; score: number; level: number }
+  | { type: ClientMessageType.RESET_ROOM_LOBBY };
 
 export enum ServerMessageType {
   SESSION_STARTED = 1,
@@ -200,6 +202,8 @@ export enum ServerMessageType {
   ROOM_GAME_OVER = 15,
   ROOM_ERROR = 16,
   ROOM_PLAYERS_COMPACT = 17,
+  ROOM_CLOSED = 18,
+  ROOM_RESET_LOBBY = 19,
 }
 
 export type LeaderboardEntry = {
@@ -238,7 +242,9 @@ export type ServerMessagePayload =
   | { type: ServerMessageType.ROOM_PLAYER_DIED; uid: string }
   | { type: ServerMessageType.ROOM_GAME_OVER; rankings: RoomRankingEntry[] }
   | { type: ServerMessageType.ROOM_ERROR; message: string }
-  | { type: ServerMessageType.ROOM_PLAYERS_COMPACT; players: CompactPlayerState[] };
+  | { type: ServerMessageType.ROOM_PLAYERS_COMPACT; players: CompactPlayerState[] }
+  | { type: ServerMessageType.ROOM_CLOSED; reason?: string }
+  | { type: ServerMessageType.ROOM_RESET_LOBBY; code: string; seed: number; players: RoomPlayerEntry[] };
 
 export type RoomPlayerEntry = {
   uid: string
@@ -440,7 +446,8 @@ export function decodeClientMessage(buffer: ArrayBuffer | Uint8Array): ClientMes
         if (tag.fieldNumber === 1 && tag.wireType === 2) uid = inner.readString();
         else inner.skip(tag.wireType);
       }
-      return { type, uid };
+    } else if (type === ClientMessageType.RESET_ROOM_LOBBY) {
+      return { type };
     }
     return null;
   } catch {
@@ -529,6 +536,18 @@ export function encodeServerMessage(msg: ServerMessagePayload): Uint8Array {
     inner.writeString(1, msg.message);
   } else if (msg.type === ServerMessageType.ROOM_PLAYERS_COMPACT) {
     return encodeRoomPlayersCompact(msg.players);
+  } else if (msg.type === ServerMessageType.ROOM_CLOSED) {
+    if (msg.reason) inner.writeString(1, msg.reason);
+  } else if (msg.type === ServerMessageType.ROOM_RESET_LOBBY) {
+    inner.writeString(1, msg.code);
+    inner.writeUint32(2, msg.seed);
+    for (const p of msg.players) {
+      const item = new BinaryWriter();
+      item.writeString(1, p.uid);
+      if (p.username) item.writeString(2, p.username);
+      item.writeBool(3, p.isHost);
+      inner.writeBytes(3, item.finish());
+    }
   }
 
   outer.writeBytes(2, inner.finish());
@@ -638,6 +657,39 @@ export function decodeServerMessage(buffer: ArrayBuffer | Uint8Array): ServerMes
         else inner.skip(tag.wireType);
       }
       return { type, available, error };
+    } else if (type === ServerMessageType.ROOM_CLOSED) {
+      let reason = "";
+      while (inner.hasMore()) {
+        const tag = inner.readTag();
+        if (!tag) break;
+        if (tag.fieldNumber === 1 && tag.wireType === 2) reason = inner.readString();
+        else inner.skip(tag.wireType);
+      }
+      return { type, reason };
+    } else if (type === ServerMessageType.ROOM_RESET_LOBBY) {
+      let code = "", seed = 0;
+      const players: RoomPlayerEntry[] = [];
+      while (inner.hasMore()) {
+        const tag = inner.readTag();
+        if (!tag) break;
+        if (tag.fieldNumber === 1 && tag.wireType === 2) code = inner.readString();
+        else if (tag.fieldNumber === 2 && tag.wireType === 0) seed = inner.readVarint();
+        else if (tag.fieldNumber === 3 && tag.wireType === 2) {
+          const itemBytes = inner.readBytes();
+          const ir = new BinaryReader(itemBytes);
+          let uid = "", username: string | null = null, isHost = false;
+          while (ir.hasMore()) {
+            const it = ir.readTag();
+            if (!it) break;
+            if (it.fieldNumber === 1 && it.wireType === 2) uid = ir.readString();
+            else if (it.fieldNumber === 2 && it.wireType === 2) username = ir.readString();
+            else if (it.fieldNumber === 3 && it.wireType === 0) isHost = ir.readVarint() === 1;
+            else ir.skip(it.wireType);
+          }
+          players.push({ uid, username, isHost });
+        } else inner.skip(tag.wireType);
+      }
+      return { type, code, seed, players };
     }
     return null;
   } catch {
@@ -680,6 +732,7 @@ export function encodeRoomPlayersCompact(players: CompactPlayerState[]): Uint8Ar
   for (let i = 0; i < count; i++) {
     const off = 2 + i * 17;
     const p = players[i];
+    if (!p) continue;
     dv.setUint8(off, p.playerIndex);
     dv.setUint8(off + 1, p.alive ? 1 : 0);
     dv.setInt16(off + 2, Math.round(Math.max(-32768, Math.min(32767, p.x * 100))), true);

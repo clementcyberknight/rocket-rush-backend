@@ -210,20 +210,44 @@ export class RoomService {
     const room = rooms.get(code)
     if (!room) { uidToRoom.delete(uid); return }
 
-    room.players.delete(uid)
-    uidToRoom.delete(uid)
     try { ws.unsubscribe(`room:${code}`) } catch {}
+    uidToRoom.delete(uid)
 
-    if (room.players.size === 0) {
+    // If host leaves/disconnects, close the room and return everyone to main menu
+    if (room.hostUid === uid) {
+      console.log(`[RoomService] Host ${uid} left room ${code}. Closing room for all players.`)
+      const closedBytes = encodeServerMessage({
+        type: ServerMessageType.ROOM_CLOSED,
+        reason: "Room creator left. Returning to main menu.",
+      })
+      for (const [pUid, p] of room.players) {
+        if (pUid !== uid) {
+          try { p.ws.send(closedBytes) } catch {}
+          uidToRoom.delete(pUid)
+        }
+      }
       rooms.delete(code)
-      try { const redis = getRedis(); redis.del(Keys.room(code)); redis.del(Keys.roomPlayers(code)); redis.del(Keys.roomPositions(code)) } catch {}
-      console.log(`[RoomService] Room ${code} deleted (empty)`)
+      try {
+        const redis = getRedis()
+        redis.del(Keys.room(code))
+        redis.del(Keys.roomPlayers(code))
+        redis.del(Keys.roomPositions(code))
+      } catch {}
       return
     }
 
-    if (room.hostUid === uid) {
-      const first = room.players.values().next().value
-      if (first) { room.hostUid = first.uid; first.isHost = true }
+    room.players.delete(uid)
+
+    if (room.players.size === 0) {
+      rooms.delete(code)
+      try {
+        const redis = getRedis()
+        redis.del(Keys.room(code))
+        redis.del(Keys.roomPlayers(code))
+        redis.del(Keys.roomPositions(code))
+      } catch {}
+      console.log(`[RoomService] Room ${code} deleted (empty)`)
+      return
     }
 
     const leaveBytes = encodeServerMessage({ type: ServerMessageType.ROOM_PLAYER_LEFT, uid })
@@ -232,8 +256,45 @@ export class RoomService {
     try {
       const redis = getRedis()
       redis.srem(Keys.roomPlayers(code), uid)
-      redis.hset(Keys.room(code), { player_count: room.players.size.toString(), host_uid: room.hostUid })
+      redis.hset(Keys.room(code), { player_count: room.players.size.toString() })
     } catch {}
+  }
+
+  resetRoomToLobby(ws: AppWebSocket): void {
+    const uid = ws.data.uid
+    if (!uid) return
+    const code = uidToRoom.get(uid)
+    if (!code) return
+    const room = rooms.get(code)
+    if (!room) return
+    if (room.hostUid !== uid) return
+
+    room.status = "lobby"
+    room.seed = (Math.random() * 0xffffffff) >>> 0
+    let idx = 0
+    room.players.forEach(p => {
+      p.playerIndex = idx++
+      p.alive = true
+      p.score = 0
+      p.x = 0; p.y = 3; p.z = -10; p.speed = 0; p.level = 0
+    })
+
+    const players: RoomPlayerEntry[] = []
+    for (const [, p] of room.players) {
+      players.push({ uid: p.uid, username: p.username, isHost: p.isHost })
+    }
+
+    try {
+      getRedis().hset(Keys.room(code), { status: "lobby", seed: room.seed.toString() })
+    } catch {}
+
+    const server = this.getServer()
+    server.publish(`room:${code}`, encodeServerMessage({
+      type: ServerMessageType.ROOM_RESET_LOBBY,
+      code,
+      seed: room.seed,
+      players,
+    }))
   }
 
   async startRoom(ws: AppWebSocket): Promise<boolean> {

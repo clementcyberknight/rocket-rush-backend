@@ -375,6 +375,11 @@ export function createWebSocketHandler(serverGetter: () => AppServer) {
             break
           }
 
+          case ClientMessageType.RESET_ROOM_LOBBY: {
+            roomService.resetRoomToLobby(ws)
+            break
+          }
+
           case ClientMessageType.START_ROOM: {
             const ok = await roomService.startRoom(ws)
             if (!ok) {
@@ -397,6 +402,7 @@ export function createWebSocketHandler(serverGetter: () => AppServer) {
 
     close(ws: AppWebSocket) {
       try {
+        roomService.leaveRoom(ws)
         ws.unsubscribe(CONFIG.TOPIC_LEADERBOARD)
       } catch (error) {
         console.error("[WS] Error closing socket:", error)
