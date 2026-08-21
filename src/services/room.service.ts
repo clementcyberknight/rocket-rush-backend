@@ -371,18 +371,18 @@ export class RoomService {
     const code = uidToRoom.get(uid)
     if (!code) return
     const room = rooms.get(code)
-    if (!room) return
+    if (!room || room.status !== "playing") return
     const player = room.players.get(uid)
-    if (!player) return
+    if (!player || !player.alive) return
 
     player.alive = false
     const server = this.getServer()
     server.publish(`room:${code}`, encodeServerMessage({ type: ServerMessageType.ROOM_PLAYER_DIED, uid }))
 
     const aliveCount = Array.from(room.players.values()).filter(p => p.alive).length
-    const totalPlayers = room.players.size
 
-    if (aliveCount === 0 || (totalPlayers > 1 && aliveCount <= 1)) {
+    // The round ONLY finishes when ALL players have crashed (aliveCount === 0)
+    if (aliveCount === 0) {
       room.status = "finished"
       const sorted = Array.from(room.players.values()).sort((a, b) => b.score - a.score)
       const rankings: RoomRankingEntry[] = sorted.map((p, i) => ({
