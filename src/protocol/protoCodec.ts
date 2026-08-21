@@ -698,49 +698,46 @@ export function decodeServerMessage(buffer: ArrayBuffer | Uint8Array): ServerMes
 }
 
 export function encodePlayerMove(x: number, y: number, z: number, speed: number, score: number, level: number): Uint8Array {
-  const buf = new Uint8Array(16);
-  const dv = new DataView(buf.buffer, buf.byteOffset, 16);
+  const buf = new Uint8Array(9);
+  const dv = new DataView(buf.buffer, buf.byteOffset, 9);
   dv.setUint8(0, ClientMessageType.PLAYER_MOVE);
   dv.setInt16(1, Math.round(Math.max(-32768, Math.min(32767, x * 100))), true);
-  dv.setInt16(3, Math.round(Math.max(-32768, Math.min(32767, y * 100))), true);
-  dv.setFloat32(5, z, true);
-  dv.setUint16(9, Math.round(Math.max(0, Math.min(65535, speed * 100))), true);
-  dv.setFloat32(11, score, true);
-  dv.setUint8(15, Math.min(255, Math.max(0, level)));
+  dv.setUint8(3, Math.round(Math.max(0, Math.min(255, (y - 1.0) * 30))));
+  dv.setFloat32(4, z, true);
+  const speedQuant = Math.round(Math.max(0, Math.min(15, speed * 2.5)));
+  const levelQuant = Math.max(0, Math.min(15, Math.floor(level)));
+  dv.setUint8(8, (speedQuant << 4) | (levelQuant & 0x0F));
   return buf;
 }
 
 export function decodePlayerMove(bytes: Uint8Array): { x: number; y: number; z: number; speed: number; score: number; level: number } {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  return {
-    x: dv.getInt16(1, true) / 100,
-    y: dv.getInt16(3, true) / 100,
-    z: dv.getFloat32(5, true),
-    speed: dv.getUint16(9, true) / 100,
-    score: dv.getFloat32(11, true),
-    level: dv.getUint8(15),
-  };
+  const x = dv.getInt16(1, true) / 100;
+  const y = 1.0 + (dv.getUint8(3) / 30);
+  const z = dv.getFloat32(4, true);
+  const packed = dv.getUint8(8);
+  const speed = (packed >> 4) / 2.5;
+  const level = packed & 0x0F;
+  const score = Math.max(0, Math.abs(z) - 10);
+  return { x, y, z, speed, score, level };
 }
 
 export function encodeRoomPlayersCompact(players: CompactPlayerState[]): Uint8Array {
   const count = players.length;
-  const totalBytes = 2 + count * 17;
+  const totalBytes = 2 + count * 8;
   const buf = new Uint8Array(totalBytes);
   const dv = new DataView(buf.buffer, buf.byteOffset, totalBytes);
   dv.setUint8(0, ServerMessageType.ROOM_PLAYERS_COMPACT);
   dv.setUint8(1, count);
   for (let i = 0; i < count; i++) {
-    const off = 2 + i * 17;
+    const off = 2 + i * 8;
     const p = players[i];
     if (!p) continue;
-    dv.setUint8(off, p.playerIndex);
-    dv.setUint8(off + 1, p.alive ? 1 : 0);
-    dv.setInt16(off + 2, Math.round(Math.max(-32768, Math.min(32767, p.x * 100))), true);
-    dv.setInt16(off + 4, Math.round(Math.max(-32768, Math.min(32767, p.y * 100))), true);
-    dv.setFloat32(off + 6, p.z, true);
-    dv.setUint16(off + 10, Math.round(Math.max(0, Math.min(65535, p.speed * 100))), true);
-    dv.setFloat32(off + 12, p.score, true);
-    dv.setUint8(off + 16, Math.min(255, Math.max(0, p.level)));
+    const packed = ((p.alive ? 1 : 0) << 7) | ((Math.min(7, p.level) & 0x07) << 4) | (p.playerIndex & 0x0F);
+    dv.setUint8(off, packed);
+    dv.setInt16(off + 1, Math.round(Math.max(-32768, Math.min(32767, p.x * 100))), true);
+    dv.setUint8(off + 3, Math.round(Math.max(0, Math.min(255, (p.y - 1.0) * 30))));
+    dv.setFloat32(off + 4, p.z, true);
   }
   return buf;
 }
@@ -750,19 +747,28 @@ export function decodeRoomPlayersCompact(bytes: Uint8Array): CompactPlayerState[
   const count = dv.getUint8(1);
   const players: CompactPlayerState[] = [];
   for (let i = 0; i < count; i++) {
-    const off = 2 + i * 17;
-    if (off + 17 > bytes.byteLength) break;
+    const off = 2 + i * 8;
+    if (off + 8 > bytes.byteLength) break;
+    const packed = dv.getUint8(off);
+    const alive = (packed & 0x80) !== 0;
+    const level = (packed >> 4) & 0x07;
+    const playerIndex = packed & 0x0F;
+    const x = dv.getInt16(off + 1, true) / 100;
+    const y = 1.0 + (dv.getUint8(off + 3) / 30);
+    const z = dv.getFloat32(off + 4, true);
+    const score = Math.max(0, Math.abs(z) - 10);
     players.push({
-      playerIndex: dv.getUint8(off),
-      alive: dv.getUint8(off + 1) === 1,
-      x: dv.getInt16(off + 2, true) / 100,
-      y: dv.getInt16(off + 4, true) / 100,
-      z: dv.getFloat32(off + 6, true),
-      speed: dv.getUint16(off + 10, true) / 100,
-      score: dv.getFloat32(off + 12, true),
-      level: dv.getUint8(off + 16),
+      playerIndex,
+      alive,
+      x,
+      y,
+      z,
+      speed: 1.0 + (level * 0.15),
+      score,
+      level,
     });
   }
   return players;
 }
+
 
