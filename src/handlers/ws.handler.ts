@@ -120,7 +120,14 @@ export function createWebSocketHandler(serverGetter: () => AppServer) {
               msg.z || 0
             )
             if (ws.data.uid) {
-              roomService.updatePosition(ws.data.uid, msg.x || 0, msg.y || 0, msg.z || 0, msg.score || 0, msg.level || 0)
+              roomService.updatePosition(ws.data.uid, msg.x || 0, msg.y || 0, msg.z || 0, msg.speed || 0, msg.score || 0, msg.level || 0)
+            }
+            break
+          }
+
+          case ClientMessageType.PLAYER_MOVE: {
+            if (ws.data.uid) {
+              roomService.updatePosition(ws.data.uid, msg.x, msg.y, msg.z, msg.speed, msg.score, msg.level)
             }
             break
           }

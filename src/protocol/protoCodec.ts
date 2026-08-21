@@ -164,6 +164,7 @@ export enum ClientMessageType {
   LEAVE_ROOM = 10,
   START_ROOM = 11,
   SPECTATE_TARGET = 12,
+  PLAYER_MOVE = 13,
 }
 
 export type ClientMessagePayload =
@@ -178,7 +179,8 @@ export type ClientMessagePayload =
   | { type: ClientMessageType.JOIN_ROOM; code: string; wallet?: string; username?: string }
   | { type: ClientMessageType.LEAVE_ROOM }
   | { type: ClientMessageType.START_ROOM }
-  | { type: ClientMessageType.SPECTATE_TARGET; uid: string };
+  | { type: ClientMessageType.SPECTATE_TARGET; uid: string }
+  | { type: ClientMessageType.PLAYER_MOVE; x: number; y: number; z: number; speed: number; score: number; level: number };
 
 export enum ServerMessageType {
   SESSION_STARTED = 1,
@@ -197,6 +199,7 @@ export enum ServerMessageType {
   ROOM_PLAYER_DIED = 14,
   ROOM_GAME_OVER = 15,
   ROOM_ERROR = 16,
+  ROOM_PLAYERS_COMPACT = 17,
 }
 
 export type LeaderboardEntry = {
@@ -205,6 +208,18 @@ export type LeaderboardEntry = {
   username: string | null;
   score: number;
 };
+
+export type CompactPlayerState = {
+  playerIndex: number
+  alive: boolean
+  x: number
+  y: number
+  z: number
+  speed: number
+  score: number
+  level: number
+  uid?: string
+}
 
 export type ServerMessagePayload =
   | { type: ServerMessageType.SESSION_STARTED; sessionId: string; uid: string; ghost?: Uint8Array }
@@ -222,7 +237,8 @@ export type ServerMessagePayload =
   | { type: ServerMessageType.ROOM_STARTED }
   | { type: ServerMessageType.ROOM_PLAYER_DIED; uid: string }
   | { type: ServerMessageType.ROOM_GAME_OVER; rankings: RoomRankingEntry[] }
-  | { type: ServerMessageType.ROOM_ERROR; message: string };
+  | { type: ServerMessageType.ROOM_ERROR; message: string }
+  | { type: ServerMessageType.ROOM_PLAYERS_COMPACT; players: CompactPlayerState[] };
 
 export type RoomPlayerEntry = {
   uid: string
@@ -287,7 +303,16 @@ export function encodeClientMessage(msg: ClientMessagePayload): Uint8Array {
 
 export function decodeClientMessage(buffer: ArrayBuffer | Uint8Array): ClientMessagePayload | null {
   try {
-    const reader = new BinaryReader(buffer);
+    const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+    if (bytes.byteLength === 16 && bytes[0] === ClientMessageType.PLAYER_MOVE) {
+      const move = decodePlayerMove(bytes);
+      return {
+        type: ClientMessageType.PLAYER_MOVE,
+        ...move,
+      };
+    }
+
+    const reader = new BinaryReader(bytes);
     let type: number = 0;
     let payloadBytes: Uint8Array | null = null;
 
@@ -502,6 +527,8 @@ export function encodeServerMessage(msg: ServerMessagePayload): Uint8Array {
     }
   } else if (msg.type === ServerMessageType.ROOM_ERROR) {
     inner.writeString(1, msg.message);
+  } else if (msg.type === ServerMessageType.ROOM_PLAYERS_COMPACT) {
+    return encodeRoomPlayersCompact(msg.players);
   }
 
   outer.writeBytes(2, inner.finish());
@@ -510,7 +537,16 @@ export function encodeServerMessage(msg: ServerMessagePayload): Uint8Array {
 
 export function decodeServerMessage(buffer: ArrayBuffer | Uint8Array): ServerMessagePayload | null {
   try {
-    const reader = new BinaryReader(buffer);
+    const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+    if (bytes.byteLength >= 2 && bytes[0] === ServerMessageType.ROOM_PLAYERS_COMPACT) {
+      const players = decodeRoomPlayersCompact(bytes);
+      return {
+        type: ServerMessageType.ROOM_PLAYERS_COMPACT,
+        players,
+      };
+    }
+
+    const reader = new BinaryReader(bytes);
     let type: number = 0;
     let payloadBytes: Uint8Array | null = null;
 
@@ -608,3 +644,72 @@ export function decodeServerMessage(buffer: ArrayBuffer | Uint8Array): ServerMes
     return null;
   }
 }
+
+export function encodePlayerMove(x: number, y: number, z: number, speed: number, score: number, level: number): Uint8Array {
+  const buf = new Uint8Array(16);
+  const dv = new DataView(buf.buffer, buf.byteOffset, 16);
+  dv.setUint8(0, ClientMessageType.PLAYER_MOVE);
+  dv.setInt16(1, Math.round(Math.max(-32768, Math.min(32767, x * 100))), true);
+  dv.setInt16(3, Math.round(Math.max(-32768, Math.min(32767, y * 100))), true);
+  dv.setFloat32(5, z, true);
+  dv.setUint16(9, Math.round(Math.max(0, Math.min(65535, speed * 100))), true);
+  dv.setFloat32(11, score, true);
+  dv.setUint8(15, Math.min(255, Math.max(0, level)));
+  return buf;
+}
+
+export function decodePlayerMove(bytes: Uint8Array): { x: number; y: number; z: number; speed: number; score: number; level: number } {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return {
+    x: dv.getInt16(1, true) / 100,
+    y: dv.getInt16(3, true) / 100,
+    z: dv.getFloat32(5, true),
+    speed: dv.getUint16(9, true) / 100,
+    score: dv.getFloat32(11, true),
+    level: dv.getUint8(15),
+  };
+}
+
+export function encodeRoomPlayersCompact(players: CompactPlayerState[]): Uint8Array {
+  const count = players.length;
+  const totalBytes = 2 + count * 17;
+  const buf = new Uint8Array(totalBytes);
+  const dv = new DataView(buf.buffer, buf.byteOffset, totalBytes);
+  dv.setUint8(0, ServerMessageType.ROOM_PLAYERS_COMPACT);
+  dv.setUint8(1, count);
+  for (let i = 0; i < count; i++) {
+    const off = 2 + i * 17;
+    const p = players[i];
+    dv.setUint8(off, p.playerIndex);
+    dv.setUint8(off + 1, p.alive ? 1 : 0);
+    dv.setInt16(off + 2, Math.round(Math.max(-32768, Math.min(32767, p.x * 100))), true);
+    dv.setInt16(off + 4, Math.round(Math.max(-32768, Math.min(32767, p.y * 100))), true);
+    dv.setFloat32(off + 6, p.z, true);
+    dv.setUint16(off + 10, Math.round(Math.max(0, Math.min(65535, p.speed * 100))), true);
+    dv.setFloat32(off + 12, p.score, true);
+    dv.setUint8(off + 16, Math.min(255, Math.max(0, p.level)));
+  }
+  return buf;
+}
+
+export function decodeRoomPlayersCompact(bytes: Uint8Array): CompactPlayerState[] {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const count = dv.getUint8(1);
+  const players: CompactPlayerState[] = [];
+  for (let i = 0; i < count; i++) {
+    const off = 2 + i * 17;
+    if (off + 17 > bytes.byteLength) break;
+    players.push({
+      playerIndex: dv.getUint8(off),
+      alive: dv.getUint8(off + 1) === 1,
+      x: dv.getInt16(off + 2, true) / 100,
+      y: dv.getInt16(off + 4, true) / 100,
+      z: dv.getFloat32(off + 6, true),
+      speed: dv.getUint16(off + 10, true) / 100,
+      score: dv.getFloat32(off + 12, true),
+      level: dv.getUint8(off + 16),
+    });
+  }
+  return players;
+}
+

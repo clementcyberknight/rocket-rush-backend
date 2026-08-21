@@ -7,25 +7,17 @@ export const Keys = {
   identityToUid: (identity: string) => `${P}id:${identity}`,
   username: (lower: string) => `${P}un:${lower}`,
   uidToUsername: (uid: string) => `${P}uun:${uid}`,
-
   profile: (uid: string) => `${P}p:${uid}`,
-
   lbWeekly: (weekKey: string) => `${P}lb:w:${weekKey}`,
   lbAllTime: () => `${P}lb:all`,
-
   lbCacheWeekly: (weekKey: string) => `${P}c:w:${weekKey}`,
   lbCacheAllTime: () => `${P}c:all`,
-
   session: (sessionId: string) => `${P}sess:${sessionId}`,
-
   tickList: (sessionId: string) => `${P}tick:${sessionId}`,
-
   ghost: (uid: string) => `${P}ghost:${uid}`,
-
   room: (code: string) => `${P}room:${code}`,
   roomPlayers: (code: string) => `${P}room:${code}:players`,
   roomPositions: (code: string) => `${P}room:${code}:pos`,
-
   rateLimit: (action: string, id: string) => `${P}rl:${action}:${id}`,
 } as const
 

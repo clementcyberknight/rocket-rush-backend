@@ -3,10 +3,12 @@ import { Keys } from "../redis/keys"
 import { CONFIG } from "../config"
 import {
   encodeServerMessage,
+  encodeRoomPlayersCompact,
   ServerMessageType,
   type RoomPlayerEntry,
   type RoomPlayerState,
   type RoomRankingEntry,
+  type CompactPlayerState,
 } from "../protocol/protoCodec"
 import { usernameService } from "./username.service"
 import { userService } from "./user.service"
@@ -16,7 +18,7 @@ const ROOM_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 const ROOM_CODE_LEN = 6
 const ROOM_MAX_PLAYERS = 10
 const ROOM_TTL = 60 * 60 * 2
-const BROADCAST_INTERVAL_MS = 50
+const BROADCAST_INTERVAL_MS = 40
 
 interface InMemoryPlayer {
   ws: AppWebSocket
@@ -24,7 +26,13 @@ interface InMemoryPlayer {
   username: string | null
   isHost: boolean
   alive: boolean
-  x: number; y: number; z: number; score: number; level: number
+  playerIndex: number
+  x: number
+  y: number
+  z: number
+  speed: number
+  score: number
+  level: number
 }
 
 interface InMemoryRoom {
@@ -51,34 +59,31 @@ let broadcastTimer: Timer | null = null
 
 function startBroadcastTimer(server: AppServer) {
   if (broadcastTimer) return
-  broadcastTimer = setInterval(async () => {
-    const redis = getRedis()
+  broadcastTimer = setInterval(() => {
     for (const [code, room] of rooms) {
       if (room.status !== "playing") continue
       try {
-        const posHash = Keys.roomPositions(code)
-        const rawPos = await redis.hgetall(posHash)
-        if (!rawPos || Object.keys(rawPos).length === 0) continue
+        if (room.players.size === 0) continue
 
-        const states: RoomPlayerState[] = []
-        for (const [rUid, raw] of Object.entries(rawPos)) {
-          const parts = (raw || "").split(",")
-          const player = room.players.get(rUid)
-          states.push({
-            uid: rUid,
-            username: player?.username || null,
-            x: parseFloat(parts[0] || "0"),
-            y: parseFloat(parts[1] || "0"),
-            z: parseFloat(parts[2] || "0"),
-            score: parseFloat(parts[3] || "0"),
-            alive: parts[5] === "1",
-            level: parseInt(parts[4] || "0"),
+        const compactStates: CompactPlayerState[] = []
+        for (const [, p] of room.players) {
+          compactStates.push({
+            playerIndex: p.playerIndex,
+            alive: p.alive,
+            x: p.x,
+            y: p.y,
+            z: p.z,
+            speed: p.speed,
+            score: p.score,
+            level: p.level,
+            uid: p.uid,
           })
         }
-        if (states.length === 0) continue
 
-        const bytes = encodeServerMessage({ type: ServerMessageType.ROOM_PLAYERS, players: states })
-        server.publish(`room:${code}`, bytes)
+        if (compactStates.length > 0) {
+          const bytes = encodeRoomPlayersCompact(compactStates)
+          server.publish(`room:${code}`, bytes)
+        }
       } catch (err) {
         console.error(`[RoomService] Broadcast error for room ${code}:`, err)
       }
@@ -124,7 +129,8 @@ export class RoomService {
 
     room.players.set(uid, {
       ws, uid, username, isHost: true, alive: true,
-      x: 0, y: 0, z: 0, score: 0, level: 0
+      playerIndex: 0,
+      x: 0, y: 3, z: -10, speed: 0, score: 0, level: 0
     })
 
     rooms.set(code, room)
@@ -164,9 +170,11 @@ export class RoomService {
       username = u?.username || preferredUsername || null
     }
 
+    const playerIndex = room.players.size
     const player: InMemoryPlayer = {
       ws, uid, username, isHost: false, alive: true,
-      x: 0, y: 0, z: 0, score: 0, level: 0
+      playerIndex,
+      x: 0, y: 3, z: -10, speed: 0, score: 0, level: 0
     }
 
     room.players.set(uid, player)
@@ -241,10 +249,12 @@ export class RoomService {
     // Generate new random seed for every new game round
     room.seed = (Math.random() * 0xffffffff) >>> 0
     room.status = "countdown"
+    let idx = 0
     room.players.forEach(p => {
+      p.playerIndex = idx++
       p.alive = true
       p.score = 0
-      p.x = 0; p.y = 0; p.z = 0
+      p.x = 0; p.y = 3; p.z = -10; p.speed = 0; p.level = 0
     })
 
     try {
@@ -277,7 +287,7 @@ export class RoomService {
     return true
   }
 
-  updatePosition(uid: string, x: number, y: number, z: number, score: number, level: number): void {
+  updatePosition(uid: string, x: number, y: number, z: number, speed: number, score: number, level: number): void {
     const code = uidToRoom.get(uid)
     if (!code) return
     const room = rooms.get(code)
@@ -286,13 +296,12 @@ export class RoomService {
     const player = room.players.get(uid)
     if (!player || !player.alive) return
 
-    player.x = x; player.y = y; player.z = z; player.score = score; player.level = level
-
-    try {
-      getRedis().hset(Keys.roomPositions(code), {
-        [uid]: `${x},${y},${z},${score},${level},1`
-      })
-    } catch {}
+    player.x = x
+    player.y = y
+    player.z = z
+    player.speed = speed
+    player.score = score
+    player.level = level
   }
 
   playerDied(ws: AppWebSocket): void {
@@ -306,12 +315,6 @@ export class RoomService {
     if (!player) return
 
     player.alive = false
-    try {
-      getRedis().hset(Keys.roomPositions(code), {
-        [uid]: `${player.x},${player.y},${player.z},${player.score},${player.level},0`
-      })
-    } catch {}
-
     const server = this.getServer()
     server.publish(`room:${code}`, encodeServerMessage({ type: ServerMessageType.ROOM_PLAYER_DIED, uid }))
 
